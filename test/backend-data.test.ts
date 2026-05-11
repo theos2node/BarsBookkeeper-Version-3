@@ -1,0 +1,136 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { applyDecision, reverseDecision } from '../src/brain/decisions.js'
+import { openDatabase, type Db } from '../src/db/database.js'
+import { getInventoryPosition, getInventoryPositions } from '../src/db/inventory.js'
+import { migrateDatabase } from '../src/db/migrations.js'
+import { ensureSku } from '../src/db/repositories.js'
+import { seedDemoData } from '../src/db/seed.js'
+import { generateForecasts } from '../src/forecast/index.js'
+import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
+import { generateVendorGroupedOrderRecommendations } from '../src/orders/index.js'
+
+describe('backend data slice', () => {
+  let db: Db
+  const asOf = '2026-05-11T12:00:00.000Z'
+
+  beforeEach(() => {
+    db = openDatabase(':memory:')
+    migrateDatabase(db)
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  it('creates the requested schema through migrations', () => {
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((row) => row.name)
+
+    expect(tables).toEqual(
+      expect.arrayContaining([
+        'sources',
+        'source_documents',
+        'ingest_runs',
+        'evidence_items',
+        'vendors',
+        'skus',
+        'vendor_items',
+        'menu_items',
+        'recipes',
+        'inventory_events',
+        'openclaw_decisions',
+        'forecasts',
+        'order_recommendations',
+        'audit_log',
+      ]),
+    )
+  })
+
+  it('seeds demo operating data', () => {
+    seedDemoData(db, asOf)
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM vendors').get()?.count).toBe(3)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM recipes').get()?.count).toBe(4)
+    expect(getInventoryPositions(db, { asOf }).length).toBeGreaterThan(0)
+  })
+
+  it('ingests invoices, counts, and Toast sales into evidence-backed inventory events', () => {
+    seedDemoData(db, asOf)
+
+    const invoice = ingestInvoices(
+      db,
+      `vendor,invoiceNumber,invoiceDate,sku,quantity,unit,unitCost
+Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
+    )
+    const toast = ingestToastSales(db, [
+      {
+        externalId: 'check-1',
+        occurredAt: '2026-05-11T14:00:00.000Z',
+        menuItem: 'House Mule',
+        quantitySold: 10,
+      },
+    ])
+    const count = ingestCounts(db, [
+      {
+        countId: 'count-1',
+        occurredAt: '2026-05-11T15:00:00.000Z',
+        sku: 'House Vodka 1L',
+        countedQuantity: 5200,
+        unit: 'ml',
+      },
+    ])
+
+    expect(invoice.recordsImported).toBe(1)
+    expect(toast.recordsImported).toBe(1)
+    expect(count.recordsImported).toBe(1)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM evidence_items').get()?.count).toBeGreaterThanOrEqual(8)
+
+    const skuId = ensureSku(db, { name: 'House Vodka 1L', unit: 'ml' })
+    const position = getInventoryPosition(db, skuId, { asOf: '2026-05-11T16:00:00.000Z' })
+    expect(position?.onHand).toBe(5200)
+  })
+
+  it('applies and reverses OpenClaw decisions as auditable inventory events', () => {
+    const eventId = applyDecision(db, {
+      title: 'Add missed bottle delivery',
+      payload: {
+        eventType: 'purchase',
+        skuName: 'House Gin 1L',
+        vendorName: 'Southern Glazer',
+        quantity: 1000,
+        unit: 'ml',
+        occurredAt: asOf,
+        reason: 'Invoice line was omitted',
+      },
+      confidence: 0.82,
+    })
+    const skuId = ensureSku(db, { name: 'House Gin 1L', unit: 'ml' })
+
+    expect(eventId).toBeGreaterThan(0)
+    expect(getInventoryPosition(db, skuId, { asOf })?.onHand).toBe(1000)
+
+    const decisionId = Number(db.prepare('SELECT id FROM openclaw_decisions LIMIT 1').get()?.id)
+    const reversalId = reverseDecision(db, decisionId)
+    expect(reversalId).toBeGreaterThan(eventId)
+    expect(getInventoryPosition(db, skuId)?.onHand).toBe(0)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM audit_log').get()?.count).toBe(3)
+  })
+
+  it('generates forecasts and vendor-grouped order recommendations', () => {
+    seedDemoData(db, asOf)
+    ingestToastSales(db, [
+      { externalId: 'check-1', occurredAt: '2026-05-10T12:00:00.000Z', menuItem: 'Classic Burger', quantitySold: 18 },
+      { externalId: 'check-2', occurredAt: '2026-05-11T12:00:00.000Z', menuItem: 'Classic Burger', quantitySold: 18 },
+    ])
+
+    const forecasts = generateForecasts(db, { asOf, horizonDays: 7, usageWindowDays: 7 })
+    const orders = generateVendorGroupedOrderRecommendations(db, { asOf, horizonDays: 7, usageWindowDays: 7 })
+
+    expect(forecasts.length).toBeGreaterThan(0)
+    expect(orders.length).toBeGreaterThan(0)
+    expect(orders.flatMap((group) => group.items).some((item) => item.skuName === 'Burger Bun')).toBe(true)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM order_recommendations').get()?.count).toBeGreaterThan(0)
+  })
+})
