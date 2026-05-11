@@ -33,6 +33,18 @@ export const seedDemo = async (args: string[], context: CommandContext): Promise
     args: (_rawArgs, _context, { db }) => [db],
   })
 
+export const seedFieldDemo = async (args: string[], context: CommandContext): Promise<void> =>
+  runServiceCommand(args, context, {
+    title: 'Seed field demo',
+    started: 'Generating field-style invoices, Toast sales, counts, forecasts, and orders...',
+    done: 'Field demo workflow completed.',
+    missing: 'Field demo service is not present yet.',
+    modules: ['../db/fieldDemo.js'],
+    exports: ['seedFieldDemoRun'],
+    withDb: true,
+    args: (_rawArgs, _context, { db }) => [db],
+  })
+
 export const doctor = async (_args: string[], context: CommandContext): Promise<void> => {
   const { terminal, config } = context
   terminal.title('Bars Bookkeeper doctor')

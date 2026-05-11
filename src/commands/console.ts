@@ -2,24 +2,37 @@ import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { getInventoryPositions } from '../db/inventory.js'
 import { toNumber, toStringValue } from '../db/database.js'
+import { launchDashboard } from '../tui/dashboard.js'
 import { OperatorInputError } from './service-command.js'
 import { withBackendDb } from './backend.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const consoleCommand = async (
-  _args: string[],
+  args: string[],
   context: CommandContext,
   commands: CommandDefinition[],
   dispatch: (args: string[], context: CommandContext) => Promise<number>,
 ): Promise<void> => {
+  if (args.includes('--snapshot')) {
+    context.terminal.title('Bars Bookkeeper console')
+    await renderSnapshot(context)
+    return
+  }
+
   context.terminal.title('Bars Bookkeeper console')
-  context.terminal.subtitle('Type `help` for commands. Type `exit` or `quit` to close.')
+  context.terminal.subtitle('Full-screen mode. Press `q` to close, `s` to generate simulated data, `w` to run workflow.')
 
   if (!input.isTTY) {
     await renderSnapshot(context)
     return
   }
 
+  if (!args.includes('--shell')) {
+    await launchDashboard(context.config)
+    return
+  }
+
+  context.terminal.subtitle('Shell mode. Type `help` for commands. Type `exit` or `quit` to close.')
   const rl = createInterface({ input, output })
   try {
     for (;;) {

@@ -23,6 +23,7 @@ bbk doctor
 npm run bbk -- setup
 npm run bbk -- doctor
 npm run bbk -- seed-demo
+npm run bbk -- seed-field-demo
 npm run bbk -- forecast run
 npm run bbk -- orders generate
 npm run bbk -- console
@@ -46,6 +47,34 @@ npm run bbk -- review
 npm run bbk -- review dismiss <decision-id> "reason"
 npm run bbk -- review apply <decision-id>
 npm run bbk -- review reverse <decision-id>
+```
+
+## Terminal Console
+
+Run the full-screen terminal dashboard:
+
+```sh
+npm run bbk -- console
+```
+
+Keyboard controls:
+
+- `tab` or `1`-`7`: switch views.
+- `r`: refresh.
+- `w`: run OpenClaw brain, forecasts, and orders on the current data.
+- `s`: generate a realistic simulated operating run, then refresh.
+- `q`: quit.
+
+Automation-friendly snapshot:
+
+```sh
+npm run bbk -- console --snapshot
+```
+
+The generated field demo creates realistic invoices, Toast sales, a manager count, review tasks, forecasts, and vendor-grouped order recommendations:
+
+```sh
+npm run bbk -- seed-field-demo
 ```
 
 The CLI owns terminal UX and orchestration only. Backend work is loaded dynamically when available from `src/db`, `src/ingest`, `src/brain`, `src/forecast`, and `src/orders`. Missing backend hooks are reported as warnings instead of faking business behavior in the terminal layer.

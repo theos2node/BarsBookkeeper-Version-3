@@ -1,5 +1,5 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
-import { doctor, seedDemo, setup } from './system.js'
+import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
@@ -23,6 +23,12 @@ export const createCommands = (
     usage: 'bbk seed-demo',
     summary: 'Seed demo data through the backend seed service.',
     handler: seedDemo,
+  },
+  {
+    path: ['seed-field-demo'],
+    usage: 'bbk seed-field-demo',
+    summary: 'Generate realistic sample operating data and run the workflow.',
+    handler: seedFieldDemo,
   },
   {
     path: ['ingest', 'invoice'],
@@ -74,8 +80,8 @@ export const createCommands = (
   },
   {
     path: ['console'],
-    usage: 'bbk console',
-    summary: 'Open a small interactive command console.',
+    usage: 'bbk console [--snapshot|--shell]',
+    summary: 'Open the full-screen terminal operations dashboard.',
     handler: (args, context) => consoleCommand(args, context, createCommands(dispatch), dispatch),
   },
 ]
