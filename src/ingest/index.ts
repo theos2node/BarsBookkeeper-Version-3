@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { createDecision, markDecisionApplied } from '../brain/decisions.js'
 import { toNumber, withTransaction, type Db } from '../db/database.js'
 import {
   beginIngestRun,
@@ -111,6 +112,23 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
           rawJson: row,
           contentHash: digest(row),
         })
+        const decisionId = createDecision(db, {
+          title: `Apply invoice line ${externalId}: ${skuName}`,
+          payload: {
+            kind: 'invoice_purchase',
+            eventType: 'purchase',
+            skuName,
+            vendorName,
+            quantity,
+            unit,
+            occurredAt,
+            sourceDocumentId: documentId,
+          },
+          confidence: 0.94,
+          riskLevel: 'low',
+          state: 'auto_applied',
+          evidence: [{ kind: 'invoice', sourceDocumentId: documentId, externalId }],
+        })
         const eventId = createInventoryEvent(db, {
           skuId,
           eventType: 'purchase',
@@ -118,6 +136,7 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
           unit,
           unitCost: unitCost || null,
           sourceDocumentId: documentId,
+          decisionId,
           occurredAt,
           note: `Invoice ${externalId} from ${vendorName}`,
         })
@@ -127,6 +146,7 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
           entityType: 'inventory_event',
           entityId: eventId,
           inventoryEventId: eventId,
+          decisionId,
           occurredAt,
           summary: `${vendorName} invoice added ${quantity} ${unit} ${skuName}`,
           amount: quantity,
@@ -134,6 +154,7 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
           payload: row,
         })
         db.prepare('UPDATE inventory_events SET evidence_item_id = ? WHERE id = ?').run(evidenceId, eventId)
+        markDecisionApplied(db, decisionId, eventId)
         imported += 1
       })
     })
@@ -178,12 +199,31 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
           rawJson: row,
           contentHash: digest(row),
         })
+        const decisionId = createDecision(db, {
+          title: `Apply inventory count ${externalId}: ${skuName}`,
+          payload: {
+            kind: 'inventory_count_adjustment',
+            eventType: 'adjustment',
+            skuName,
+            quantity: delta,
+            countedQuantity,
+            before,
+            unit,
+            occurredAt,
+            sourceDocumentId: documentId,
+          },
+          confidence: 0.9,
+          riskLevel: Math.abs(delta) > Math.max(100, Math.abs(before) * 0.5) ? 'medium' : 'low',
+          state: 'auto_applied',
+          evidence: [{ kind: 'count', sourceDocumentId: documentId, externalId }],
+        })
         const eventId = createInventoryEvent(db, {
           skuId,
           eventType: 'adjustment',
           quantity: delta,
           unit,
           sourceDocumentId: documentId,
+          decisionId,
           occurredAt,
           note: `Count adjusted ${skuName} from ${before} to ${countedQuantity}`,
         })
@@ -193,6 +233,7 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
           entityType: 'inventory_event',
           entityId: eventId,
           inventoryEventId: eventId,
+          decisionId,
           occurredAt,
           summary: `Counted ${countedQuantity} ${unit} ${skuName}`,
           amount: countedQuantity,
@@ -200,6 +241,7 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
           payload: { ...row, before, delta },
         })
         db.prepare('UPDATE inventory_events SET evidence_item_id = ? WHERE id = ?').run(evidenceId, eventId)
+        markDecisionApplied(db, decisionId, eventId)
         imported += 1
       })
     })
@@ -230,13 +272,6 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
           return
         }
 
-        const menuItemId = ensureMenuItem(db, menuItemName, row.externalId ?? null)
-        const recipes = db.prepare('SELECT sku_id, quantity, unit, yield_quantity FROM recipes WHERE menu_item_id = ? AND active = 1').all(menuItemId)
-        if (recipes.length === 0) {
-          errors += 1
-          return
-        }
-
         const externalId = value(row.externalId) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
         const documentId = createSourceDocument(db, {
           sourceId,
@@ -247,16 +282,71 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
           rawJson: row,
           contentHash: digest(row),
         })
+        const menuItemId = ensureMenuItem(db, menuItemName, row.externalId ?? null)
+        const recipes = db.prepare('SELECT sku_id, quantity, unit, yield_quantity FROM recipes WHERE menu_item_id = ? AND active = 1').all(menuItemId)
+        if (recipes.length === 0) {
+          const decisionId = createDecision(db, {
+            title: `Map Toast item recipe: ${menuItemName}`,
+            payload: {
+              kind: 'missing_recipe',
+              menuItemId,
+              menuItemName,
+              quantitySold,
+              occurredAt,
+              sourceDocumentId: documentId,
+            },
+            confidence: 0.62,
+            riskLevel: 'medium',
+            state: 'needs_review',
+            evidence: [{ kind: 'toast', sourceDocumentId: documentId, externalId }],
+          })
+          createEvidenceItem(db, {
+            sourceDocumentId: documentId,
+            evidenceType: 'toast_missing_recipe',
+            entityType: 'menu_item',
+            entityId: menuItemId,
+            decisionId,
+            occurredAt,
+            summary: `${menuItemName} sold ${quantitySold} time(s), but no recipe is mapped`,
+            amount: quantitySold,
+            unit: 'sale',
+            confidence: 0.62,
+            payload: row,
+          })
+          errors += 1
+          return
+        }
 
         recipes.forEach((recipe) => {
           const consumed = (toNumber(recipe.quantity) / Math.max(1, toNumber(recipe.yield_quantity, 1))) * quantitySold
           const unit = value(recipe.unit) || 'unit'
+          const sku = db.prepare('SELECT name FROM skus WHERE id = ?').get(toNumber(recipe.sku_id))
+          const skuName = value(sku?.name) || `SKU ${toNumber(recipe.sku_id)}`
+          const decisionId = createDecision(db, {
+            title: `Apply Toast sale ${externalId}: ${menuItemName}`,
+            payload: {
+              kind: 'toast_sale_consumption',
+              eventType: 'sale',
+              menuItemName,
+              skuName,
+              quantity: -consumed,
+              consumed,
+              unit,
+              occurredAt,
+              sourceDocumentId: documentId,
+            },
+            confidence: 0.88,
+            riskLevel: 'low',
+            state: 'auto_applied',
+            evidence: [{ kind: 'toast', sourceDocumentId: documentId, externalId }],
+          })
           const eventId = createInventoryEvent(db, {
             skuId: toNumber(recipe.sku_id),
             eventType: 'sale',
             quantity: -consumed,
             unit,
             sourceDocumentId: documentId,
+            decisionId,
             occurredAt,
             note: `Toast sale ${menuItemName} x ${quantitySold}`,
           })
@@ -266,6 +356,7 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
             entityType: 'inventory_event',
             entityId: eventId,
             inventoryEventId: eventId,
+            decisionId,
             occurredAt,
             summary: `${menuItemName} consumed ${consumed} ${unit}`,
             amount: consumed,
@@ -273,6 +364,7 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
             payload: row,
           })
           db.prepare('UPDATE inventory_events SET evidence_item_id = ? WHERE id = ?').run(evidenceId, eventId)
+          markDecisionApplied(db, decisionId, eventId)
         })
         imported += 1
       })

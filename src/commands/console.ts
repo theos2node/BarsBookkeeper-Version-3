@@ -1,5 +1,7 @@
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
+import { getInventoryPositions } from '../db/inventory.js'
+import { toNumber, toStringValue } from '../db/database.js'
 import { withBackendDb } from './backend.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
@@ -40,13 +42,21 @@ export const consoleCommand = async (
 const renderSnapshot = async (context: CommandContext) => {
   context.terminal.section('Snapshot')
   await withBackendDb(context.config, async (db: any) => {
-    const inventory = db
+    const positions = getInventoryPositions(db)
+    const reviewCount = toNumber(
+      db.prepare("SELECT COUNT(*) AS count FROM openclaw_decisions WHERE state = 'needs_review'").get()?.count,
+    )
+    const sourceRows = db
       .prepare(
-        `SELECT s.name, s.unit, COALESCE(SUM(e.quantity), 0) AS on_hand, s.par_level
-         FROM skus s
-         LEFT JOIN inventory_events e ON e.sku_id = s.id
+        `SELECT s.kind,
+                s.name,
+                MAX(COALESCE(r.completed_at, r.started_at)) AS last_run,
+                COALESCE(SUM(CASE WHEN r.status = 'failed' THEN 1 ELSE 0 END), 0) AS failures
+         FROM sources s
+         LEFT JOIN ingest_runs r ON r.source_id = s.id
+         WHERE s.is_active = 1
          GROUP BY s.id
-         ORDER BY s.name`,
+         ORDER BY s.kind, s.name`,
       )
       .all()
     const orders = db
@@ -59,10 +69,115 @@ const renderSnapshot = async (context: CommandContext) => {
          ORDER BY vendor, sku`,
       )
       .all()
+    const decisions = db
+      .prepare(
+        `SELECT id, state, risk_level AS risk, title, confidence, created_at
+         FROM openclaw_decisions
+         WHERE state = 'needs_review'
+         ORDER BY created_at DESC
+         LIMIT 8`,
+      )
+      .all()
+    const recentApplied = db
+      .prepare(
+        `SELECT id, title, confidence, created_at
+         FROM openclaw_decisions
+         WHERE state = 'auto_applied'
+         ORDER BY created_at DESC
+         LIMIT 5`,
+      )
+      .all()
+    const evidence = db
+      .prepare(
+        `SELECT evidence_type AS type, summary, confidence, created_at
+         FROM evidence_items
+         ORDER BY created_at DESC
+         LIMIT 8`,
+      )
+      .all()
+
+    const atRisk = positions.filter((position) => position.warningState === 'critical' || position.warningState === 'low').length
+    const openOrders = orders.length
+    context.terminal.table([
+      {
+        inventory_items: positions.length,
+        at_risk: atRisk,
+        review_tasks: reviewCount,
+        open_orders: openOrders,
+        data_sources: sourceRows.length,
+      },
+    ])
+
+    context.terminal.section('Source freshness')
+    context.terminal.table(
+      sourceRows.length > 0
+        ? sourceRows.map((row: any) => ({
+            kind: row.kind,
+            source: row.name,
+            last_run: row.last_run ?? 'never',
+            failures: toNumber(row.failures),
+          }))
+        : [{ status: 'none', next: 'run `bbk seed-demo`, `bbk ingest`, or `bbk toast connect`' }],
+    )
+
     context.terminal.section('Inventory')
-    context.terminal.table(inventory)
+    context.terminal.table(
+      positions.map((position) => ({
+        state: position.warningState,
+        sku: position.name,
+        on_hand: `${position.onHand} ${position.unit}`,
+        par: position.parLevel ?? '',
+        days_left: position.daysRemaining ?? '',
+        confidence: position.confidence,
+      })),
+    )
+
+    context.terminal.section('Review tasks')
+    context.terminal.table(
+      decisions.length > 0
+        ? decisions.map((row: any) => ({
+            id: row.id,
+            state: row.state,
+            risk: row.risk,
+            confidence: row.confidence,
+            task: row.title,
+          }))
+        : [{ status: 'none', next: 'run `bbk brain run` after ingesting data' }],
+    )
+
+    context.terminal.section('Recently applied decisions')
+    context.terminal.table(
+      recentApplied.length > 0
+        ? recentApplied.map((row: any) => ({
+            id: row.id,
+            confidence: row.confidence,
+            decision: row.title,
+          }))
+        : [{ status: 'none', next: 'ingest data or apply a reviewed decision' }],
+    )
+
     context.terminal.section('Open order recommendations')
-    context.terminal.table(orders.length > 0 ? orders : [{ status: 'none', next: 'run `bbk orders generate`' }])
+    context.terminal.table(
+      orders.length > 0
+        ? orders.map((row: any) => ({
+            vendor: row.vendor,
+            sku: row.sku,
+            qty: `${row.recommended_qty} ${row.unit}`,
+            confidence: row.confidence,
+          }))
+        : [{ status: 'none', next: 'run `bbk forecast run` then `bbk orders generate`' }],
+    )
+
+    context.terminal.section('Latest evidence')
+    context.terminal.table(
+      evidence.length > 0
+        ? evidence.map((row: any) => ({
+            type: row.type,
+            confidence: row.confidence,
+            evidence: toStringValue(row.summary),
+          }))
+        : [{ status: 'none', next: 'ingest invoices, counts, or Toast sales' }],
+    )
   })
 }
 

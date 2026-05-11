@@ -24,6 +24,16 @@ export type OpenClawDecisionInput = {
   evidence?: unknown[]
 }
 
+export type OpenClawGenericDecisionInput = {
+  title: string
+  payload: Record<string, unknown>
+  confidence: number
+  riskLevel?: 'low' | 'medium' | 'high' | 'critical'
+  state?: 'proposed' | 'auto_applied' | 'needs_review' | 'suppressed'
+  evidence?: unknown[]
+  policy?: Record<string, unknown>
+}
+
 const decisionState = (confidence: number, riskLevel: string) => {
   if (riskLevel === 'high' || riskLevel === 'critical') return 'needs_review'
   if (confidence >= 0.85) return 'auto_applied'
@@ -31,30 +41,54 @@ const decisionState = (confidence: number, riskLevel: string) => {
   return 'needs_review'
 }
 
+export const createDecision = (db: Db, input: OpenClawGenericDecisionInput): number => {
+  const riskLevel = input.riskLevel ?? 'low'
+  const state = input.state ?? decisionState(input.confidence, riskLevel)
+  const result = db
+    .prepare(
+      `INSERT INTO openclaw_decisions
+       (state, risk_level, title, payload_json, policy_json, confidence, evidence_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      state,
+      riskLevel,
+      input.title,
+      stringifyJson(input.payload),
+      stringifyJson(input.policy ?? { thresholds: { autoApply: 0.85, review: 0.65 } }),
+      input.confidence,
+      stringifyJson(input.evidence ?? []),
+    )
+  const decisionId = lastInsertId(result.lastInsertRowid)
+  db.prepare(
+    `INSERT INTO audit_log (actor, action, entity_type, entity_id, after_json)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run('openclaw', 'propose_decision', 'openclaw_decisions', decisionId, stringifyJson(input))
+  return decisionId
+}
+
+export const markDecisionApplied = (db: Db, decisionId: number, eventId: number): void => {
+  db.prepare(
+    `UPDATE openclaw_decisions
+     SET state = 'auto_applied', applied_inventory_event_id = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+  ).run(eventId, decisionId)
+  db.prepare(
+    `INSERT INTO audit_log (actor, action, entity_type, entity_id, after_json)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run('openclaw', 'apply_decision', 'openclaw_decisions', decisionId, stringifyJson({ decisionId, eventId }))
+}
+
 export const applyDecision = (db: Db, input: OpenClawDecisionInput): number => {
   return withTransaction(db, () => {
     const riskLevel = input.riskLevel ?? 'low'
     const state = decisionState(input.confidence, riskLevel)
-    const decisionResult = db
-      .prepare(
-        `INSERT INTO openclaw_decisions
-         (state, risk_level, title, payload_json, policy_json, confidence, evidence_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        state,
-        riskLevel,
-        input.title,
-        stringifyJson(input.payload),
-        stringifyJson({ thresholds: { autoApply: 0.85, review: 0.65 } }),
-        input.confidence,
-        stringifyJson(input.evidence ?? []),
-      )
-    const decisionId = lastInsertId(decisionResult.lastInsertRowid)
-    db.prepare(
-      `INSERT INTO audit_log (actor, action, entity_type, entity_id, after_json)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run('openclaw', 'propose_decision', 'openclaw_decisions', decisionId, stringifyJson(input))
+    const decisionId = createDecision(db, {
+      ...input,
+      payload: input.payload,
+      riskLevel,
+      state,
+    })
 
     if (state !== 'auto_applied') {
       return decisionId
@@ -86,15 +120,7 @@ export const applyDecision = (db: Db, input: OpenClawDecisionInput): number => {
       payload: input,
     })
     db.prepare('UPDATE inventory_events SET evidence_item_id = ? WHERE id = ?').run(evidenceId, eventId)
-    db.prepare(
-      `UPDATE openclaw_decisions
-       SET applied_inventory_event_id = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-    ).run(eventId, decisionId)
-    db.prepare(
-      `INSERT INTO audit_log (actor, action, entity_type, entity_id, after_json)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run('openclaw', 'apply_decision', 'openclaw_decisions', decisionId, stringifyJson({ decisionId, eventId }))
+    markDecisionApplied(db, decisionId, eventId)
     return eventId
   })
 }

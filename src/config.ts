@@ -26,6 +26,6 @@ export const getConfig = (): AppConfig => {
     logicModel: process.env.OPENCLAW_LOGIC_MODEL || 'gpt-5.4',
     logicReasoningEffort: effort(process.env.OPENCLAW_LOGIC_REASONING_EFFORT, 'low'),
     fastModel: process.env.OPENCLAW_FAST_MODEL || 'gpt-5.4-mini',
-    fastReasoningEffort: effort(process.env.OPENCLAW_FAST_REASONING_EFFORT, 'medium'),
+    fastReasoningEffort: effort(process.env.OPENCLAW_FAST_REASONING_EFFORT, 'low'),
   }
 }

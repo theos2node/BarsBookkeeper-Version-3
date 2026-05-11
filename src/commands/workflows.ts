@@ -34,7 +34,7 @@ export const toastConnect = async (args: string[], context: CommandContext): Pro
     missing: 'Toast connection service is not present yet.',
     modules: ['../ingest/toast.js', '../ingest/toast/index.js'],
     exports: ['connectToast', 'toastConnect', 'startToastConnect'],
-    args: (_rawArgs, ctx) => [ctx.config],
+    args: (rawArgs, ctx) => [ctx.config, rawArgs],
   })
 
 export const toastPull = async (args: string[], context: CommandContext): Promise<void> =>
@@ -45,7 +45,8 @@ export const toastPull = async (args: string[], context: CommandContext): Promis
     missing: 'Toast pull service is not present yet.',
     modules: ['../ingest/toast.js', '../ingest/toast/index.js'],
     exports: ['pullToast', 'toastPull', 'syncToastSales'],
-    args: (_rawArgs, ctx) => [ctx.config],
+    withDb: true,
+    args: (rawArgs, ctx, { db }) => [db, ctx.config, rawArgs],
   })
 
 export const brainRun = async (args: string[], context: CommandContext): Promise<void> =>

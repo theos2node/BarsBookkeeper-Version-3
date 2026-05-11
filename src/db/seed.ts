@@ -1,3 +1,4 @@
+import { createDecision, markDecisionApplied } from '../brain/decisions.js'
 import { withTransaction, type Db } from './database.js'
 import {
   ensureMenuItem,
@@ -35,45 +36,90 @@ export const seedDemoData = (db: Db, asOf = new Date().toISOString()): void => {
     upsertRecipeItem(db, { menuItemId: burger, skuId: burgerBun, quantity: 1, unit: 'each' })
     upsertRecipeItem(db, { menuItemId: burger, skuId: beef, quantity: 1, unit: 'each' })
 
-    seedInventoryEventWithEvidence(db, {
+    seedStock(db, {
       skuId: vodka,
-      eventType: 'purchase',
+      skuName: 'House Vodka 1L',
       quantity: 5000,
       unit: 'ml',
       unitCost: 0.0185,
       occurredAt: asOf,
-      evidenceType: 'seed',
       summary: 'Demo opening stock for House Vodka 1L',
     })
-    seedInventoryEventWithEvidence(db, {
+    seedStock(db, {
       skuId: lime,
-      eventType: 'purchase',
+      skuName: 'Lime Juice',
       quantity: 2000,
       unit: 'ml',
       unitCost: 0.008,
       occurredAt: asOf,
-      evidenceType: 'seed',
       summary: 'Demo opening stock for Lime Juice',
     })
-    seedInventoryEventWithEvidence(db, {
+    seedStock(db, {
       skuId: burgerBun,
-      eventType: 'purchase',
+      skuName: 'Burger Bun',
       quantity: 36,
       unit: 'each',
       unitCost: 0.5,
       occurredAt: asOf,
-      evidenceType: 'seed',
       summary: 'Demo opening stock for Burger Bun',
     })
-    seedInventoryEventWithEvidence(db, {
+    seedStock(db, {
       skuId: beef,
-      eventType: 'purchase',
+      skuName: 'Burger Patty',
       quantity: 30,
       unit: 'each',
       unitCost: 2.25,
       occurredAt: asOf,
-      evidenceType: 'seed',
       summary: 'Demo opening stock for Burger Patty',
     })
   })
+}
+
+const seedStock = (
+  db: Db,
+  input: {
+    skuId: number
+    skuName: string
+    quantity: number
+    unit: string
+    unitCost: number
+    occurredAt: string
+    summary: string
+  },
+) => {
+  const existing = db
+    .prepare(
+      `SELECT id FROM inventory_events
+       WHERE sku_id = ? AND event_type = 'purchase' AND quantity = ? AND occurred_at = ? AND note = ?`,
+    )
+    .get(input.skuId, input.quantity, input.occurredAt, input.summary)
+  if (existing) return
+
+  const decisionId = createDecision(db, {
+    title: `Apply demo opening stock: ${input.skuName}`,
+    payload: {
+      kind: 'demo_opening_stock',
+      eventType: 'purchase',
+      skuName: input.skuName,
+      quantity: input.quantity,
+      unit: input.unit,
+      occurredAt: input.occurredAt,
+    },
+    confidence: 1,
+    riskLevel: 'low',
+    state: 'auto_applied',
+    evidence: [{ kind: 'seed', summary: input.summary }],
+  })
+  const eventId = seedInventoryEventWithEvidence(db, {
+    skuId: input.skuId,
+    eventType: 'purchase',
+    quantity: input.quantity,
+    unit: input.unit,
+    unitCost: input.unitCost,
+    decisionId,
+    occurredAt: input.occurredAt,
+    evidenceType: 'seed',
+    summary: input.summary,
+  })
+  markDecisionApplied(db, decisionId, eventId)
 }
