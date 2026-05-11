@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { AppConfig, ModelEffort } from '../config.js'
+import { recordOpenClawUsage } from './usage.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -70,6 +71,12 @@ export const runCodexJson = async <T>(request: CodexJsonRequest): Promise<T> => 
         maxBuffer: 8 * 1024 * 1024,
       }
     )
+    recordOpenClawUsage({
+      model: request.model,
+      prompt,
+      output: stdout,
+      source: 'codex',
+    })
     return JSON.parse(stripFence(stdout)) as T
   } catch (err) {
     if (request.fallback !== undefined) return request.fallback as T

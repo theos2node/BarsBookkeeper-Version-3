@@ -65,6 +65,8 @@ Keyboard controls:
 - `s`: generate a realistic simulated operating run, then refresh.
 - `q`: quit.
 
+The upper-right OpenClaw usage readout is an estimate. It tracks local Codex-backed OpenClaw calls made through this app and estimates cost from prompt/output character counts using editable model-rate defaults.
+
 Automation-friendly snapshot:
 
 ```sh

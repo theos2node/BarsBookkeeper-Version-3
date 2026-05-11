@@ -7,6 +7,7 @@ import { migrateDatabase } from '../db/migrations.js'
 import { seedFieldDemoRun } from '../db/fieldDemo.js'
 import { generateForecasts } from '../forecast/index.js'
 import { generateVendorGroupedOrderRecommendations } from '../orders/index.js'
+import { readUsageSummary, type UsageSummary } from '../openclaw/usage.js'
 
 type DashboardState = {
   summary: Record<string, string | number>
@@ -16,6 +17,7 @@ type DashboardState = {
   evidence: Array<Record<string, string | number>>
   sources: Array<Record<string, string | number>>
   recent: Array<Record<string, string | number>>
+  usage: UsageSummary
 }
 
 type PanelName = 'Overview' | 'Inventory' | 'Orders' | 'Reviews' | 'Evidence' | 'Sources' | 'Recent'
@@ -41,6 +43,16 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
     tags: true,
     style: { fg: 'white', bg: 'blue' },
     content: ' {bold}Bars Bookkeeper{/bold}  Terminal Operations Console',
+  })
+  const usageBox = blessed.box({
+    top: 0,
+    right: 0,
+    width: 46,
+    height: 3,
+    tags: true,
+    align: 'right',
+    style: { fg: 'white', bg: 'blue' },
+    content: 'OpenClaw est $0.0000 | 0 tok | 0 calls ',
   })
   const nav = blessed.list({
     top: 3,
@@ -103,6 +115,7 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
   })
 
   screen.append(header)
+  screen.append(usageBox)
   screen.append(nav)
   screen.append(main)
   screen.append(detail)
@@ -169,6 +182,7 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
 
   const render = (): void => {
     if (!currentState) return
+    usageBox.setContent(usageContent(currentState.usage))
     nav.select(panels.indexOf(activePanel))
     main.setLabel(` ${activePanel} `)
     const rows = tableFor(activePanel, currentState)
@@ -271,6 +285,7 @@ const readDashboardState = async (config: AppConfig): Promise<DashboardState> =>
         open_orders: orders.length,
         evidence_items: evidence.length,
         sources: sources.length,
+        openclaw_est_usd: `$${readUsageSummary().estimatedUsd.toFixed(4)}`,
       },
       inventory: positions.map((position) => ({
         state: position.warningState,
@@ -311,8 +326,14 @@ const readDashboardState = async (config: AppConfig): Promise<DashboardState> =>
         confidence: row.confidence,
         decision: row.title,
       })),
+      usage: readUsageSummary(),
     }
   })
+
+const usageContent = (usage: UsageSummary): string => {
+  const cost = usage.estimatedUsd < 0.0001 && usage.estimatedUsd > 0 ? '<$0.0001' : `$${usage.estimatedUsd.toFixed(4)}`
+  return `OpenClaw est ${cost} | ${usage.totalTokens} tok | ${usage.calls} calls `
+}
 
 const tableFor = (panel: PanelName, state: DashboardState): string[][] => {
   if (panel === 'Overview') {
@@ -372,6 +393,12 @@ const detailFor = (panel: PanelName, state: DashboardState): string => {
       `Inventory items: ${state.summary.inventory}`,
       `Review tasks: ${state.summary.review_tasks}`,
       `Open order recommendations: ${state.summary.open_orders}`,
+      '',
+      '{bold}OpenClaw estimate{/bold}',
+      `Estimated spend: $${state.usage.estimatedUsd.toFixed(4)}`,
+      `Tokens: ${state.usage.inputTokens} input / ${state.usage.outputTokens} output`,
+      `Blended: $${state.usage.blendedUsdPer1kTokens.toFixed(6)} per 1K tokens`,
+      state.usage.note,
     ].join('\n')
   }
   const rows = state[panel.toLowerCase() as keyof Omit<DashboardState, 'summary'>] as Array<Record<string, string | number>>

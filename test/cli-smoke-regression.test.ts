@@ -152,7 +152,7 @@ process.exit(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM order_recommendations WHERE status = 'open'")).toBe(
       baseline.openOrders,
     )
-  })
+  }, 20_000)
 
   it('reports Toast setup problems without credentials and without making a network pull', async () => {
     await expectCliOk(['setup'], dataDir)

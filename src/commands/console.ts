@@ -3,6 +3,7 @@ import { stdin as input, stdout as output } from 'node:process'
 import { getInventoryPositions } from '../db/inventory.js'
 import { toNumber, toStringValue } from '../db/database.js'
 import { launchDashboard } from '../tui/dashboard.js'
+import { readUsageSummary } from '../openclaw/usage.js'
 import { OperatorInputError } from './service-command.js'
 import { withBackendDb } from './backend.js'
 import type { CommandContext, CommandDefinition } from './types.js'
@@ -120,6 +121,7 @@ const renderSnapshot = async (context: CommandContext) => {
 
     const atRisk = positions.filter((position) => position.warningState === 'critical' || position.warningState === 'low').length
     const openOrders = orders.length
+    const usage = readUsageSummary()
     context.terminal.table([
       {
         inventory_items: positions.length,
@@ -127,6 +129,8 @@ const renderSnapshot = async (context: CommandContext) => {
         review_tasks: reviewCount,
         open_orders: openOrders,
         data_sources: sourceRows.length,
+        openclaw_est: `$${usage.estimatedUsd.toFixed(4)}`,
+        tokens: usage.totalTokens,
       },
     ])
 
