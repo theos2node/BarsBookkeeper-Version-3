@@ -60,24 +60,38 @@ export const generateVendorGroupedOrderRecommendations = (
     const price = vendorItem.price === null ? null : toNumber(vendorItem.price)
     const estimatedCost = price === null ? null : (recommendedQty / packSize) * price
     const reason = `Bring ${position.name} from ${position.onHand} ${position.unit} toward ${Number(targetStock.toFixed(2))} ${position.unit}`
-    const result = db
-      .prepare(
-        `INSERT INTO order_recommendations
-         (forecast_id, vendor_id, sku_id, recommended_qty, unit, estimated_cost, reason, confidence)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        forecast.id,
-        toNumber(vendorItem.vendor_id),
-        position.skuId,
-        recommendedQty,
-        position.unit,
-        estimatedCost,
-        reason,
-        Math.min(position.confidence, forecast.confidence),
-      )
-
     const vendorId = toNumber(vendorItem.vendor_id)
+    const confidence = Math.min(position.confidence, forecast.confidence)
+    const existing = db
+      .prepare(
+        `SELECT id
+         FROM order_recommendations
+         WHERE forecast_id = ? AND vendor_id = ? AND sku_id = ? AND status = 'open'
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(forecast.id, vendorId, position.skuId)
+    const recommendationId = existing
+      ? toNumber(existing.id)
+      : lastInsertId(
+          db
+            .prepare(
+              `INSERT INTO order_recommendations
+               (forecast_id, vendor_id, sku_id, recommended_qty, unit, estimated_cost, reason, confidence)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(forecast.id, vendorId, position.skuId, recommendedQty, position.unit, estimatedCost, reason, confidence)
+            .lastInsertRowid,
+        )
+
+    if (existing) {
+      db.prepare(
+        `UPDATE order_recommendations
+         SET recommended_qty = ?, unit = ?, estimated_cost = ?, reason = ?, confidence = ?
+         WHERE id = ?`,
+      ).run(recommendedQty, position.unit, estimatedCost, reason, confidence, recommendationId)
+    }
+
     const group =
       groups.get(vendorId) ??
       {
@@ -93,8 +107,8 @@ export const generateVendorGroupedOrderRecommendations = (
       quantity: recommendedQty,
       unit: position.unit,
       reason,
-      confidence: Math.min(position.confidence, forecast.confidence),
-      recommendationId: lastInsertId(result.lastInsertRowid),
+      confidence,
+      recommendationId,
       estimatedCost,
     })
     group.totalEstimatedCost += estimatedCost ?? 0

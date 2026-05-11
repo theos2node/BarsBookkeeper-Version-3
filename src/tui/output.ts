@@ -58,14 +58,18 @@ export class Terminal {
     }
 
     const headers = Object.keys(rows[0] ?? {})
+    const terminalWidth = this.stream.columns && this.stream.columns > 40 ? this.stream.columns : 120
+    const separatorWidth = Math.max(0, (headers.length - 1) * 2)
+    const availableWidth = Math.max(headers.length * 8, terminalWidth - separatorWidth)
     const widths = headers.map((header) =>
       Math.max(header.length, ...rows.map((row) => formatCell(row[header]).length)),
     )
+    const cappedWidths = fitWidths(widths, availableWidth)
 
-    this.line(headers.map((header, index) => ansi.bold(header.padEnd(widths[index] ?? 0))).join('  '))
-    this.line(headers.map((_, index) => ansi.dim('-'.repeat(widths[index] ?? 0))).join('  '))
+    this.line(headers.map((header, index) => ansi.bold(header.padEnd(cappedWidths[index] ?? 0))).join('  '))
+    this.line(headers.map((_, index) => ansi.dim('-'.repeat(cappedWidths[index] ?? 0))).join('  '))
     for (const row of rows) {
-      this.line(headers.map((header, index) => formatCell(row[header]).padEnd(widths[index] ?? 0)).join('  '))
+      this.line(headers.map((header, index) => truncateCell(formatCell(row[header]), cappedWidths[index] ?? 0).padEnd(cappedWidths[index] ?? 0)).join('  '))
     }
   }
 
@@ -105,3 +109,20 @@ const formatCell = (value: unknown): string => {
   return JSON.stringify(value)
 }
 
+const fitWidths = (widths: number[], availableWidth: number): number[] => {
+  const fitted = widths.map((width) => Math.min(Math.max(width, 3), 48))
+  while (sum(fitted) > availableWidth) {
+    const widestIndex = fitted.reduce((widest, width, index) => (width > fitted[widest] ? index : widest), 0)
+    if ((fitted[widestIndex] ?? 0) <= 8) break
+    fitted[widestIndex] -= 1
+  }
+  return fitted
+}
+
+const truncateCell = (value: string, width: number): string => {
+  if (width <= 0 || value.length <= width) return value
+  if (width <= 3) return value.slice(0, width)
+  return `${value.slice(0, width - 3)}...`
+}
+
+const sum = (values: number[]): number => values.reduce((total, value) => total + value, 0)

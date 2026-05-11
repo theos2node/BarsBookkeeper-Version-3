@@ -43,6 +43,9 @@ npm run bbk -- toast pull --start 2026-05-10T00:00:00.000Z --end 2026-05-11T00:0
 npm run bbk -- toast pull --file ./samples/toast-orders.json
 npm run bbk -- brain run
 npm run bbk -- review
+npm run bbk -- review dismiss <decision-id> "reason"
+npm run bbk -- review apply <decision-id>
+npm run bbk -- review reverse <decision-id>
 ```
 
 The CLI owns terminal UX and orchestration only. Backend work is loaded dynamically when available from `src/db`, `src/ingest`, `src/brain`, `src/forecast`, and `src/orders`. Missing backend hooks are reported as warnings instead of faking business behavior in the terminal layer.
@@ -60,6 +63,12 @@ Default models:
 
 `bbk brain run` uses deterministic OpenClaw policy rules by default so a manager can run it repeatedly without spending model calls. Set `OPENCLAW_USE_CODEX=1` when you want Codex to add a concise reasoning summary on top of the local policy pass.
 
+For repeated smoke testing without model calls:
+
+```sh
+BBK_SKIP_MODEL_SMOKE=1 npm run bbk -- doctor
+```
+
 ## Toast
 
 Toast configuration can come from `.env`, command flags, or `data/toast-config.json` after `bbk toast connect`.
@@ -76,6 +85,16 @@ TOAST_CLIENT_SECRET=...
 ```
 
 The connector uses the Version 2 integration shape: machine-client auth, `Toast-Restaurant-External-ID`, and `/orders/v2/ordersBulk`. Pulled orders are flattened into Toast sale rows, then OpenClaw records the inventory decision before mutating the ledger.
+
+## Stabilization Checks
+
+The test suite includes a deterministic CLI smoke harness that runs the full local workflow against a temporary database with a fake Codex binary, so it does not spend model tokens:
+
+```sh
+npm test
+```
+
+Covered behaviors include setup, doctor, demo seed, invoice/count ingest, Toast file ingest, OpenClaw brain run, forecasts, order generation, console output, duplicate replay protection, and no-credential Toast failure handling.
 
 ## Local Data
 

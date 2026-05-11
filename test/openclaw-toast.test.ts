@@ -52,6 +52,23 @@ describe('OpenClaw and Toast prototype integration', () => {
     ])
   })
 
+  it('accepts nested Toast data wrappers and flat item payloads', () => {
+    const rows = flattenToastOrders({
+      data: {
+        items: [
+          {
+            guid: 'flat-1',
+            selections: [{ guid: 'sel-flat', name: 'House Mule', qty: 1 }],
+          },
+        ],
+      },
+    })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.menuItem).toBe('House Mule')
+    expect(rows[0]?.quantitySold).toBe(1)
+  })
+
   it('creates review tasks from missing Toast recipes and at-risk inventory', async () => {
     seedDemoData(db, '2026-05-11T12:00:00.000Z')
     ingestToastSales(db, [

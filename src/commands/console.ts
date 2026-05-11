@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { getInventoryPositions } from '../db/inventory.js'
 import { toNumber, toStringValue } from '../db/database.js'
+import { OperatorInputError } from './service-command.js'
 import { withBackendDb } from './backend.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
@@ -26,13 +27,21 @@ export const consoleCommand = async (
       if (!line) continue
       if (line === 'exit' || line === 'quit') break
       if (line === 'help') {
+        context.terminal.line('Available commands:')
         for (const command of commands) {
           if (command.path.join(' ') === 'console') continue
           context.terminal.line(`  ${command.usage.padEnd(32)} ${command.summary}`)
         }
         continue
       }
-      await dispatch(splitShellish(line), context)
+      try {
+        const args = splitShellish(line)
+        const exitCode = await dispatch(args, context)
+        if (exitCode !== 0) context.terminal.warn(`Command exited with code ${exitCode}.`)
+      } catch (error) {
+        context.terminal.error(error instanceof Error ? error.message : String(error))
+        if (error instanceof OperatorInputError && error.hint) context.terminal.subtitle(error.hint)
+      }
     }
   } finally {
     rl.close()
@@ -207,6 +216,7 @@ const splitShellish = (line: string): string[] => {
     current += char
   }
 
+  if (quote) throw new OperatorInputError('Unclosed quote in console command.', 'close the quote or remove it')
   if (current) parts.push(current)
   return parts
 }

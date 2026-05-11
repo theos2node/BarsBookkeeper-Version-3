@@ -69,7 +69,7 @@ const buildMissingRecipeTasks = (db: Db) => {
     )
     .all()
 
-  return rows.map((row) => {
+  return rows.filter((row) => !hasOpenMissingRecipeDecision(db, toNumber(row.source_document_id), toNumber(row.menu_item_id))).map((row) => {
     const payload = parseJson<Record<string, unknown>>(row.payload_json, {})
     return {
       title: `Review recipe mapping: ${toStringValue(row.menu_item_name)}`,
@@ -95,6 +95,21 @@ const buildMissingRecipeTasks = (db: Db) => {
     }
   })
 }
+
+const hasOpenMissingRecipeDecision = (db: Db, sourceDocumentId: number, menuItemId: number): boolean =>
+  Boolean(
+    db
+      .prepare(
+        `SELECT id
+         FROM openclaw_decisions
+         WHERE state IN ('proposed', 'needs_review', 'auto_applied')
+           AND payload_json LIKE ?
+           AND payload_json LIKE ?
+           AND payload_json LIKE ?
+         LIMIT 1`,
+      )
+      .get('%"kind":"missing_recipe"%', `%"sourceDocumentId":${sourceDocumentId}%`, `%"menuItemId":${menuItemId}%`),
+  )
 
 const buildInventoryRiskTasks = (db: Db) => {
   const positions = getInventoryPositions(db)

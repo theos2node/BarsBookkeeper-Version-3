@@ -176,7 +176,11 @@ const arrayFromPayload = (payload: unknown): any[] => {
   if (Array.isArray(payload)) return payload
   if (typeof payload !== 'object' || payload === null) return []
   const record = payload as Record<string, unknown>
-  for (const key of ['orders', 'data', 'items', 'results']) {
+  if (typeof record.data === 'object' && record.data !== null) {
+    const nestedRows = arrayFromPayload(record.data)
+    if (nestedRows.length > 0) return nestedRows
+  }
+  for (const key of ['orders', 'items', 'results', 'records', 'data']) {
     if (Array.isArray(record[key])) return record[key] as any[]
   }
   return [record]

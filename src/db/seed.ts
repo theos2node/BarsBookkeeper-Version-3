@@ -89,10 +89,16 @@ const seedStock = (
 ) => {
   const existing = db
     .prepare(
-      `SELECT id FROM inventory_events
-       WHERE sku_id = ? AND event_type = 'purchase' AND quantity = ? AND occurred_at = ? AND note = ?`,
+      `SELECT e.id
+       FROM inventory_events e
+       JOIN evidence_items i ON i.inventory_event_id = e.id
+       WHERE e.sku_id = ?
+         AND e.event_type = 'purchase'
+         AND i.evidence_type = 'seed'
+         AND i.summary = ?
+       LIMIT 1`,
     )
-    .get(input.skuId, input.quantity, input.occurredAt, input.summary)
+    .get(input.skuId, input.summary)
   if (existing) return
 
   const decisionId = createDecision(db, {

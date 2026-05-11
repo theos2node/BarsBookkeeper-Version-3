@@ -1,0 +1,3 @@
+countId,occurredAt,sku,countedQuantity,unit
+SMOKE-COUNT-VODKA,2026-05-11T15:00:00.000Z,House Vodka 1L,5600,ml
+SMOKE-COUNT-BUNS,2026-05-11T15:00:00.000Z,Burger Bun,18,each

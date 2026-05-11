@@ -68,8 +68,8 @@ export const createCommands = (
   },
   {
     path: ['review'],
-    usage: 'bbk review',
-    summary: 'Show decisions or exceptions needing review.',
+    usage: 'bbk review [apply|dismiss|reverse <id>]',
+    summary: 'Show or act on decisions needing review.',
     handler: review,
   },
   {
@@ -79,4 +79,3 @@ export const createCommands = (
     handler: (args, context) => consoleCommand(args, context, createCommands(dispatch), dispatch),
   },
 ]
-

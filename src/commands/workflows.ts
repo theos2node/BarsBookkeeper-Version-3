@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
-import { runServiceCommand, requirePathArg } from './service-command.js'
+import { OperatorInputError, runServiceCommand, requirePathArg } from './service-command.js'
+import { BackendUnavailableError, callBackend, withBackendDb } from './backend.js'
 import type { CommandContext } from './types.js'
 
 export const ingestInvoice = async (args: string[], context: CommandContext): Promise<void> =>
@@ -84,13 +85,115 @@ export const ordersGenerate = async (args: string[], context: CommandContext): P
     args: (_rawArgs, _ctx, { db }) => [db],
   })
 
-export const review = async (args: string[], context: CommandContext): Promise<void> =>
-  runServiceCommand(args, context, {
-    title: 'Review queue',
-    started: 'Looking for review service...',
-    done: 'Review queue loaded.',
-    missing: 'Review service is not present yet.',
-    modules: ['../brain/review.js', '../brain/index.js'],
-    exports: ['reviewDecisions', 'getReviewQueue', 'listReviewItems'],
-    args: (_rawArgs, ctx) => [ctx.config],
+export const review = async (args: string[], context: CommandContext): Promise<void> => {
+  context.terminal.title('Review queue')
+
+  const action = args[0]
+  if (action === 'apply' || action === 'dismiss' || action === 'reverse') {
+    await reviewAction(action, args.slice(1), context)
+    return
+  }
+  if (action) {
+    throw new OperatorInputError(
+      `Unknown review action: ${action}`,
+      'usage: bbk review OR bbk review apply|dismiss|reverse <id>',
+    )
+  }
+
+  try {
+    const call = await callBackend(
+      ['../brain/review.js', '../brain/index.js'],
+      ['reviewDecisions', 'getReviewQueue', 'listReviewItems'],
+      [context.config],
+    )
+    context.terminal.success('Review queue loaded.')
+    context.terminal.subtitle(`backend: ${call.module} -> ${call.exportName}`)
+    renderReviewRows(call.result, context)
+    return
+  } catch (error) {
+    if (!(error instanceof BackendUnavailableError)) throw error
+    context.terminal.info('Dedicated review service not found; reading open decisions from the local database.')
+  }
+
+  await withBackendDb(context.config, async (db: any) => {
+    const rows = db
+      .prepare(
+        `SELECT id, state, risk_level AS risk, title, confidence, created_at
+         FROM openclaw_decisions
+         WHERE state = 'needs_review'
+         ORDER BY
+           CASE risk_level
+             WHEN 'critical' THEN 0
+             WHEN 'high' THEN 1
+             WHEN 'medium' THEN 2
+             WHEN 'low' THEN 3
+             ELSE 4
+           END,
+           created_at DESC
+         LIMIT 20`,
+      )
+      .all()
+
+    if (rows.length === 0) {
+      context.terminal.success('No open review tasks.')
+      context.terminal.subtitle('run `bbk brain run` after ingesting fresh data to create new decisions')
+      return
+    }
+
+    context.terminal.warn(`${rows.length} decision${rows.length === 1 ? '' : 's'} need review.`)
+    context.terminal.table(
+      rows.map((row: any) => ({
+        id: row.id,
+        risk: row.risk,
+        confidence: row.confidence,
+        created: row.created_at,
+        task: row.title,
+      })),
+    )
   })
+}
+
+const reviewAction = async (
+  action: 'apply' | 'dismiss' | 'reverse',
+  args: string[],
+  context: CommandContext,
+): Promise<void> => {
+  const decisionId = Number(args[0])
+  if (!Number.isInteger(decisionId) || decisionId <= 0) {
+    throw new OperatorInputError(`Missing or invalid decision id.`, `usage: bbk review ${action} <id>`)
+  }
+  const reason = args.slice(1).join(' ').trim() || undefined
+  const exports =
+    action === 'apply'
+      ? ['applyReviewDecision']
+      : action === 'dismiss'
+        ? ['dismissReviewDecision']
+        : ['reverseAppliedDecision']
+  const call = await callBackend(['../brain/review.js', '../brain/index.js'], exports, [context.config, decisionId, reason])
+  context.terminal.success(`Review ${action} completed.`)
+  context.terminal.subtitle(`backend: ${call.module} -> ${call.exportName}`)
+  context.terminal.dump(call.result)
+}
+
+const renderReviewRows = (result: unknown, context: CommandContext): void => {
+  if (!Array.isArray(result)) {
+    context.terminal.dump(result)
+    return
+  }
+  if (result.length === 0) {
+    context.terminal.success('No open review tasks.')
+    context.terminal.subtitle('run `bbk brain run` after ingesting fresh data to create new decisions')
+    return
+  }
+
+  context.terminal.warn(`${result.length} decision${result.length === 1 ? '' : 's'} need review.`)
+  context.terminal.table(
+    result.map((row: any) => ({
+      id: row.id,
+      risk: row.risk_level ?? row.risk,
+      confidence: row.confidence,
+      created: row.created_at,
+      task: row.title,
+    })),
+  )
+}

@@ -48,6 +48,10 @@ export const doctor = async (_args: string[], context: CommandContext): Promise<
   await checkCodex(terminal)
 
   terminal.section('Model smoke')
+  if (process.env.BBK_SKIP_MODEL_SMOKE === '1') {
+    terminal.status('skip', 'model smoke check skipped', 'BBK_SKIP_MODEL_SMOKE=1')
+    return
+  }
   await checkModelSmoke(context)
 }
 

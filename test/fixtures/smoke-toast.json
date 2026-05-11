@@ -1,0 +1,32 @@
+{
+  "orders": [
+    {
+      "guid": "smoke-order-1",
+      "closedDate": "2026-05-11T18:00:00.000Z",
+      "businessDate": "2026-05-11",
+      "checks": [
+        {
+          "guid": "smoke-check-1",
+          "selections": [
+            {
+              "guid": "smoke-selection-mule",
+              "displayName": "House Mule",
+              "quantity": 4
+            },
+            {
+              "guid": "smoke-selection-martini",
+              "displayName": "Smoke Test Martini",
+              "quantity": 2
+            },
+            {
+              "guid": "smoke-selection-void",
+              "displayName": "Voided Smoke Item",
+              "quantity": 1,
+              "voided": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

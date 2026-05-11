@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { applyDecision, reverseDecision } from '../src/brain/decisions.js'
+import { applyDecision, applyExistingDecision, dismissDecision, reverseDecision } from '../src/brain/decisions.js'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { getInventoryPosition, getInventoryPositions } from '../src/db/inventory.js'
 import { migrateDatabase } from '../src/db/migrations.js'
@@ -118,6 +118,43 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(db.prepare('SELECT COUNT(*) AS count FROM audit_log').get()?.count).toBe(3)
   })
 
+  it('can dismiss or apply manager-reviewed OpenClaw decisions', () => {
+    const reviewDecisionId = applyDecision(db, {
+      title: 'Review missed gin delivery',
+      payload: {
+        eventType: 'purchase',
+        skuName: 'House Gin 1L',
+        quantity: 1000,
+        unit: 'ml',
+        occurredAt: asOf,
+        reason: 'Low-confidence invoice match',
+      },
+      confidence: 0.4,
+      riskLevel: 'medium',
+    })
+    expect(db.prepare('SELECT state FROM openclaw_decisions WHERE id = ?').get(reviewDecisionId)?.state).toBe('needs_review')
+
+    const eventId = applyExistingDecision(db, reviewDecisionId)
+    const skuId = ensureSku(db, { name: 'House Gin 1L', unit: 'ml' })
+    expect(eventId).toBeGreaterThan(0)
+    expect(getInventoryPosition(db, skuId, { asOf })?.onHand).toBe(1000)
+
+    const dismissId = applyDecision(db, {
+      title: 'Review unlikely count',
+      payload: {
+        eventType: 'adjustment',
+        skuName: 'House Gin 1L',
+        quantity: -5000,
+        unit: 'ml',
+        occurredAt: asOf,
+      },
+      confidence: 0.2,
+      riskLevel: 'high',
+    })
+    dismissDecision(db, dismissId, 'Bad source row')
+    expect(db.prepare('SELECT state FROM openclaw_decisions WHERE id = ?').get(dismissId)?.state).toBe('suppressed')
+  })
+
   it('generates forecasts and vendor-grouped order recommendations', () => {
     seedDemoData(db, asOf)
     ingestToastSales(db, [
@@ -132,5 +169,20 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(orders.length).toBeGreaterThan(0)
     expect(orders.flatMap((group) => group.items).some((item) => item.skuName === 'Burger Bun')).toBe(true)
     expect(db.prepare('SELECT COUNT(*) AS count FROM order_recommendations').get()?.count).toBeGreaterThan(0)
+  })
+
+  it('regenerates orders idempotently for the same forecast window', () => {
+    seedDemoData(db, asOf)
+
+    const first = generateVendorGroupedOrderRecommendations(db, { asOf, horizonDays: 7, usageWindowDays: 7 })
+    const firstCount = db.prepare("SELECT COUNT(*) AS count FROM order_recommendations WHERE status = 'open'").get()?.count
+    const second = generateVendorGroupedOrderRecommendations(db, { asOf, horizonDays: 7, usageWindowDays: 7 })
+    const secondCount = db.prepare("SELECT COUNT(*) AS count FROM order_recommendations WHERE status = 'open'").get()?.count
+
+    expect(first.flatMap((group) => group.items).length).toBeGreaterThan(0)
+    expect(second.flatMap((group) => group.items).map((item) => item.recommendationId)).toEqual(
+      first.flatMap((group) => group.items).map((item) => item.recommendationId),
+    )
+    expect(secondCount).toBe(firstCount)
   })
 })

@@ -71,6 +71,13 @@ const value = (...candidates: unknown[]): string => {
   return ''
 }
 
+const hasSourceDocument = (db: Db, sourceId: number, externalId: string, documentType: string): boolean =>
+  Boolean(
+    db
+      .prepare('SELECT id FROM source_documents WHERE source_id = ? AND external_id = ? AND document_type = ? LIMIT 1')
+      .get(sourceId, externalId, documentType),
+  )
+
 export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName = 'Invoices'): IngestResult => {
   const rows = parseJsonOrCsv<InvoiceRow>(input)
   const sourceId = ensureSource(db, sourceName, 'invoice')
@@ -92,6 +99,9 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
         }
 
         const unitCost = toNumber(row.unitCost, row.totalCost ? toNumber(row.totalCost) / quantity : 0)
+        const externalId = value(row.invoiceNumber) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
+        if (hasSourceDocument(db, sourceId, externalId, 'invoice')) return
+
         const vendorId = ensureVendor(db, vendorName)
         const skuId = ensureSku(db, { name: skuName, unit, category: value(row.category) || null })
         ensureVendorItem(db, {
@@ -102,7 +112,6 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
           price: unitCost > 0 ? unitCost * quantity : null,
         })
 
-        const externalId = value(row.invoiceNumber) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
         const documentId = createSourceDocument(db, {
           sourceId,
           externalId,
@@ -190,6 +199,8 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
         const before = getOnHand(db, skuId, occurredAt)
         const delta = countedQuantity - before
         const externalId = value(row.countId) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
+        if (hasSourceDocument(db, sourceId, externalId, 'count')) return
+
         const documentId = createSourceDocument(db, {
           sourceId,
           externalId,
@@ -273,6 +284,8 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
         }
 
         const externalId = value(row.externalId) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
+        if (hasSourceDocument(db, sourceId, externalId, 'toast_sale')) return
+
         const documentId = createSourceDocument(db, {
           sourceId,
           externalId,
