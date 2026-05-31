@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
 import { ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../src/db/repositories.js'
-import { ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
+import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
 import { getLatestBackboneRun, runBackboneModel } from '../src/backbone/index.js'
 import { backboneSimulationScenarios, runBackboneAccuracySimulation, runBackboneRollingBacktest } from '../src/backbone/simulation.js'
 
@@ -240,5 +240,64 @@ describe('Backbone prediction model', () => {
     expect(prediction?.predictedDaysRemaining).toBeLessThanOrEqual(5)
     expect(prediction?.lowStockRisk).toBe('high')
     expect(evidence.vendorCost.leadTimeDays).toBe(5)
+  })
+
+  it('does not leak future invoices or counts into time-warped predictions', () => {
+    const vendorId = ensureVendor(db, 'Timeline Vendor')
+    const skuId = ensureSku(db, { name: 'Timeline Vodka 1L', unit: 'ml', category: 'liquor' })
+    ensureVendorItem(db, {
+      vendorId,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 20,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    ingestInvoices(db, [
+      {
+        vendor: 'Timeline Vendor',
+        invoiceNumber: 'TIMELINE-OLD',
+        invoiceDate: '2026-05-01T09:00:00.000Z',
+        sku: 'Timeline Vodka 1L',
+        quantity: 2000,
+        unit: 'ml',
+        unitCost: 0.02,
+        category: 'liquor',
+      },
+      {
+        vendor: 'Timeline Vendor',
+        invoiceNumber: 'TIMELINE-FUTURE',
+        invoiceDate: '2026-05-20T09:00:00.000Z',
+        sku: 'Timeline Vodka 1L',
+        quantity: 2000,
+        unit: 'ml',
+        unitCost: 0.009,
+        category: 'liquor',
+      },
+    ])
+    ingestCounts(db, [
+      {
+        countId: 'TIMELINE-FUTURE-COUNT',
+        occurredAt: '2026-05-18T23:00:00.000Z',
+        sku: 'Timeline Vodka 1L',
+        countedQuantity: 10000,
+        unit: 'ml',
+      },
+    ])
+
+    const run = runBackboneModel(db, {
+      asOf: '2026-05-10T12:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+    const evidence = JSON.parse(
+      String(db.prepare('SELECT evidence_json FROM backbone_predictions WHERE run_id = ? AND sku_id = ?').get(run.runId, skuId)?.evidence_json),
+    )
+
+    expect(evidence.latestCost).toBe(0.02)
+    expect(evidence.highHistoricalCost).toBe(0.02)
+    expect(evidence.countAgeDays).toBeNull()
   })
 })

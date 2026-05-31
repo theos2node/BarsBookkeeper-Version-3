@@ -299,16 +299,19 @@ const cheapestVendorCost = (db: Db, skuId: number): VendorCost | null => {
   }
 }
 
-const latestPurchaseCost = (db: Db, skuId: number): number | null => {
+const latestPurchaseCost = (db: Db, skuId: number, asOf: string): number | null => {
   const row = db
     .prepare(
       `SELECT unit_cost
        FROM inventory_events
-       WHERE sku_id = ? AND event_type = 'purchase' AND unit_cost IS NOT NULL
+       WHERE sku_id = ?
+         AND event_type = 'purchase'
+         AND unit_cost IS NOT NULL
+         AND occurred_at <= ?
        ORDER BY occurred_at DESC, id DESC
        LIMIT 1`,
     )
-    .get(skuId)
+    .get(skuId, asOf)
   return row?.unit_cost === null || row?.unit_cost === undefined ? null : toNumber(row.unit_cost)
 }
 
@@ -331,11 +334,13 @@ const latestCountAgeDays = (db: Db, skuId: number, asOf: string): number | null 
     .prepare(
       `SELECT occurred_at
        FROM inventory_events
-       WHERE sku_id = ? AND event_type = 'adjustment'
+       WHERE sku_id = ?
+         AND event_type = 'adjustment'
+         AND occurred_at <= ?
        ORDER BY occurred_at DESC, id DESC
        LIMIT 1`,
     )
-    .get(skuId)
+    .get(skuId, asOf)
   return row?.occurred_at ? daysBetween(asOf, toStringValue(row.occurred_at)) : null
 }
 
@@ -599,7 +604,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         })
         const avgDailyUsage = Math.max(0, projectedUsage.dailyUsage)
         const vendorCost = cheapestVendorCost(db, position.skuId)
-        const latestCost = latestPurchaseCost(db, position.skuId)
+        const latestCost = latestPurchaseCost(db, position.skuId, resolved.asOf)
         const highHistoricalCost = highHistoricalPurchaseCost(db, position.skuId, resolved.asOf)
         const countAge = latestCountAgeDays(db, position.skuId, resolved.asOf)
         const shrinkDaily = shrinkRate(db, position.skuId, resolved.asOf, resolved.usageWindowDays)
