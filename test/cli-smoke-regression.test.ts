@@ -282,6 +282,8 @@ process.exit(1)
     expect(backboneMaintain).toContain('Snapshot gate')
     expect(backboneMaintain).toContain('Audit gate')
     expect(backboneMaintain).toContain('Data gap gate')
+    expect(backboneMaintain).toContain('Command queue')
+    expect(backboneMaintain).toContain('bbk backbone')
     expect(backboneMaintain).toContain('Backbone maintenance passed')
     expect(backboneTrust).toContain('Backbone trust report')
     expect(backboneTrust).toContain('readinessScore')
@@ -301,6 +303,7 @@ process.exit(1)
     expect(backboneMaintainHistory).toContain('smoke-main')
     expect(backboneMaintainHistory).toContain('auditWarnings')
     expect(backboneMaintainHistory).toContain('gaps')
+    expect(backboneMaintainHistory).toContain('topAction')
     expect(backboneSnapshot).toContain('Backbone snapshot')
     expect(backboneSnapshot).toContain('smoke-snapshot.sqlite')
     expect(backboneSnapshot).toContain('smoke-snapshot.manifest.json')
@@ -389,6 +392,14 @@ process.exit(1)
     ).toBe(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_toast_cursor WHERE last_end = '2026-05-11T00:00:00.000Z'")).toBe(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_maintenance_runs WHERE snapshot_label = 'smoke-maintenance'")).toBe(1)
+    const maintenanceSummary = JSON.parse(
+      String(
+        db
+          .prepare("SELECT summary_json AS value FROM backbone_maintenance_runs WHERE snapshot_label = 'smoke-maintenance'")
+          .get()?.value,
+      ),
+    ) as { nextActions?: Array<{ action?: string }> }
+    expect(maintenanceSummary.nextActions?.some((row) => String(row.action ?? '').startsWith('bbk '))).toBe(true)
 
     await expectCliOk(['setup'], dataDir)
     await expectCliOk(['seed-demo'], dataDir)

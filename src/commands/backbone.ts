@@ -187,6 +187,7 @@ type MaintenanceSummary = {
     warnings: number
   }
   gaps: BackboneGapSummary
+  nextActions: Array<Record<string, unknown>>
 }
 
 type HorizonRun = {
@@ -504,6 +505,7 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
     const auditWarnings = auditChecks.filter((check) => check.status === 'warn')
     const gapRows = buildBackboneGapRows(db, { limit, maxCountAgeDays })
     const gaps = buildBackboneGapSummary(db, 'base', gapRows, maxCountAgeDays)
+    const nextActions = buildTrustActionRows(auditChecks, gapRows, limit)
     const maintenanceSummary: MaintenanceSummary = {
       snapshot: {
         label: snapshot.label,
@@ -518,6 +520,7 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
         warnings: auditWarnings.length,
       },
       gaps,
+      nextActions,
     }
 
     context.terminal.section('Audit gate')
@@ -525,6 +528,9 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
     context.terminal.section('Data gap gate')
     context.terminal.dump(gaps)
     if (gapRows.length > 0) context.terminal.table(gapRows)
+    context.terminal.section('Command queue')
+    context.terminal.table(nextActions)
+    renderCommandLines(context, 'Commands', nextActions, 'action')
 
     persistMaintenanceRun(db, {
       startedAt,
@@ -572,8 +578,7 @@ export const backboneMaintainHistory = async (args: string[], context: CommandCo
       return
     }
 
-    context.terminal.table(
-      rows.map((row: any) => {
+    const displayRows = rows.map((row: any) => {
         const summary = parseJson<MaintenanceSummary | null>(row.summary_json, null)
         return {
           id: row.id,
@@ -586,9 +591,13 @@ export const backboneMaintainHistory = async (args: string[], context: CommandCo
           recipeCoverage: summary?.gaps.toastRecipeCoveragePct ?? '',
           staleCounts: summary?.gaps.staleCountSkus ?? '',
           missingCosts: summary?.gaps.missingVendorCostSkus ?? '',
+          topAction: summary?.nextActions?.[0]?.action ?? '',
         }
-      }),
-    )
+      })
+    context.terminal.table(displayRows)
+    context.terminal.section('Snapshots')
+    for (const row of displayRows) context.terminal.line(`${row.id}: ${row.snapshot}`)
+    renderCommandLines(context, 'Top actions', displayRows, 'topAction')
   })
 }
 
