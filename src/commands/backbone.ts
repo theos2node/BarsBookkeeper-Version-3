@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
@@ -304,6 +304,53 @@ export const backboneSnapshot = async (args: string[], context: CommandContext):
       verifications: manifest.counts.backboneVerifications,
     })
   })
+}
+
+export const backboneSnapshotVerify = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  if (!options.label) throw new Error('snapshot_label_required')
+  const label = cleanEnvName(options.label)
+  const backupDir = resolve(context.config.dataDir, 'backups')
+  const snapshotPath = resolve(backupDir, `${label}.sqlite`)
+  const manifestPath = resolve(backupDir, `${label}.manifest.json`)
+
+  context.terminal.title('Backbone snapshot verification')
+  if (!existsSync(snapshotPath)) throw new Error(`backbone_snapshot_missing:${snapshotPath}`)
+  if (!existsSync(manifestPath)) throw new Error(`backbone_snapshot_manifest_missing:${manifestPath}`)
+
+  const manifest = parseJson<SnapshotManifest>(await readFile(manifestPath, 'utf8'), { counts: { backboneRuns: 0, backbonePredictions: 0, backboneVerifications: 0 } })
+  const snapshotDb = openDatabase(snapshotPath)
+  try {
+    const integrityRow = snapshotDb.prepare('PRAGMA integrity_check').get()
+    const integrity = String(integrityRow?.integrity_check ?? '')
+    const counts = {
+      backboneRuns: scalarCount(snapshotDb, 'backbone_runs'),
+      backbonePredictions: scalarCount(snapshotDb, 'backbone_predictions'),
+      backboneVerifications: scalarCount(snapshotDb, 'backbone_verifications'),
+      inventoryEvents: scalarCount(snapshotDb, 'inventory_events'),
+      listenerCycles: scalarCount(snapshotDb, 'backbone_listener_cycles'),
+    }
+    const mismatches = [
+      countMismatch('backboneRuns', counts.backboneRuns, manifest.counts.backboneRuns),
+      countMismatch('backbonePredictions', counts.backbonePredictions, manifest.counts.backbonePredictions),
+      countMismatch('backboneVerifications', counts.backboneVerifications, manifest.counts.backboneVerifications),
+    ].filter(Boolean)
+
+    context.terminal.dump({
+      label,
+      snapshotPath,
+      manifestPath,
+      integrity,
+      ...counts,
+      manifestCreatedAt: manifest.createdAt ?? '',
+    })
+
+    if (integrity !== 'ok') throw new Error(`backbone_snapshot_integrity_failed:${integrity}`)
+    if (mismatches.length > 0) throw new Error(`backbone_snapshot_manifest_mismatch:${mismatches.join(',')}`)
+    context.terminal.success(`Snapshot ${label} verified.`)
+  } finally {
+    snapshotDb.close()
+  }
 }
 
 export const backboneActions = async (_args: string[], context: CommandContext): Promise<void> => {
@@ -814,6 +861,9 @@ const buildSnapshotManifest = (
 
 const scalarCount = (db: any, table: string): number =>
   toNumber(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count)
+
+const countMismatch = (name: string, actual: number, expected: number | undefined): string =>
+  expected === undefined || actual === expected ? '' : `${name}:${actual}!=${expected}`
 
 const sqlString = (value: string): string => value.replace(/'/g, "''")
 
