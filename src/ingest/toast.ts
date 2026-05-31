@@ -23,9 +23,16 @@ type ToastConfig = {
 type ToastPullResult = {
   configured: boolean
   restaurants: number
+  failedRestaurants: number
+  failures: Array<{ restaurantExternalId: string; error: string }>
   rowsPulled: number
   ingest: IngestResult
   source: 'file' | 'api'
+}
+
+type ToastPullOptions = {
+  maxRetries: number
+  retryDelayMs: number
 }
 
 const defaultToastConfig = (): ToastConfig => ({
@@ -58,6 +65,13 @@ const argValue = (args: string[], name: string): string | undefined => {
 }
 
 const hasFlag = (args: string[], name: string): boolean => args.includes(`--${name}`)
+
+const numberArg = (args: string[], name: string, fallback: number): number => {
+  const value = argValue(args, name)
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+}
 
 const configPath = (config: AppConfig): string => resolve(config.dataDir, 'toast-config.json')
 
@@ -172,6 +186,36 @@ const fetchToastOrders = async (toastConfig: ToastConfig, restaurantId: string, 
   return response.json()
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)))
+
+const isRetriableToastError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message === 'toast_credentials_missing' || message.startsWith('toast_auth_failed:')) return false
+  const status = Number(message.match(/toast_pull_failed:[^:]+:(\d+)/)?.[1])
+  if (!Number.isFinite(status)) return true
+  return status === 408 || status === 429 || status >= 500
+}
+
+const fetchToastOrdersWithRetry = async (
+  toastConfig: ToastConfig,
+  restaurantId: string,
+  start: string,
+  end: string,
+  options: ToastPullOptions,
+): Promise<unknown> => {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= options.maxRetries; attempt += 1) {
+    try {
+      return await fetchToastOrders(toastConfig, restaurantId, start, end)
+    } catch (error) {
+      lastError = error
+      if (attempt >= options.maxRetries || !isRetriableToastError(error)) break
+      await sleep(options.retryDelayMs)
+    }
+  }
+  throw lastError
+}
+
 const arrayFromPayload = (payload: unknown): any[] => {
   if (Array.isArray(payload)) return payload
   if (typeof payload !== 'object' || payload === null) return []
@@ -276,6 +320,8 @@ export const pullToast = async (db: Db, config: AppConfig, args: string[] = []):
     return {
       configured: true,
       restaurants: 0,
+      failedRestaurants: 0,
+      failures: [],
       rowsPulled: rows.length,
       ingest: ingestToastSales(db, rows, 'Toast file import'),
       source: 'file',
@@ -288,16 +334,34 @@ export const pullToast = async (db: Db, config: AppConfig, args: string[] = []):
     start: argValue(args, 'start') || defaultWindow().start,
     end: argValue(args, 'end') || defaultWindow().end,
   }
+  const pullOptions: ToastPullOptions = {
+    maxRetries: numberArg(args, 'max-retries', 2),
+    retryDelayMs: numberArg(args, 'retry-delay-ms', 250),
+  }
 
   const rows: ToastSalesRow[] = []
+  const failures: ToastPullResult['failures'] = []
   for (const restaurantId of toastConfig.restaurantExternalIds) {
-    const payload = await fetchToastOrders(toastConfig, restaurantId, window.start, window.end)
-    rows.push(...flattenToastOrders(payload, restaurantId))
+    try {
+      const payload = await fetchToastOrdersWithRetry(toastConfig, restaurantId, window.start, window.end, pullOptions)
+      rows.push(...flattenToastOrders(payload, restaurantId))
+    } catch (error) {
+      failures.push({
+        restaurantExternalId: restaurantId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  if (failures.length === toastConfig.restaurantExternalIds.length) {
+    throw new Error(`toast_pull_failed_all:${failures.map((failure) => `${failure.restaurantExternalId}:${failure.error}`).join('|')}`)
   }
 
   return {
     configured: true,
     restaurants: toastConfig.restaurantExternalIds.length,
+    failedRestaurants: failures.length,
+    failures,
     rowsPulled: rows.length,
     ingest: ingestToastSales(db, rows, 'Toast API'),
     source: 'api',

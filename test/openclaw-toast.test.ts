@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runOpenClawBrain } from '../src/brain/openclaw.js'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
@@ -19,6 +19,7 @@ describe('OpenClaw and Toast prototype integration', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     db.close()
   })
 
@@ -109,6 +110,82 @@ describe('OpenClaw and Toast prototype integration', () => {
       expect(result.ingest.recordsImported).toBe(0)
       expect(result.ingest.errors).toBe(1)
       expect(db.prepare("SELECT COUNT(*) AS count FROM evidence_items WHERE evidence_type = 'toast_missing_recipe'").get()?.count).toBe(1)
+    } finally {
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('retries transient Toast API failures and keeps partial restaurant data', async () => {
+    seedDemoData(db, '2026-05-11T12:00:00.000Z')
+    const dataDir = await mkdtemp(join(tmpdir(), 'bbk-toast-partial-'))
+    const attempts = new Map<string, number>()
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined
+      const restaurantId = headers?.['Toast-Restaurant-External-ID'] ?? 'unknown'
+      const nextAttempt = (attempts.get(restaurantId) ?? 0) + 1
+      attempts.set(restaurantId, nextAttempt)
+
+      if (restaurantId === 'retry-ok' && nextAttempt === 1) {
+        return { ok: false, status: 500, json: async () => ({}) }
+      }
+      if (restaurantId === 'retry-ok') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            orders: [
+              {
+                guid: 'retry-order',
+                closedDate: '2026-05-11T18:00:00.000Z',
+                checks: [{ guid: 'retry-check', selections: [{ guid: 'retry-selection', displayName: 'House Mule', quantity: 1 }] }],
+              },
+            ],
+          }),
+        }
+      }
+      return { ok: false, status: 503, json: async () => ({}) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    try {
+      const result = await pullToast(
+        db,
+        {
+          dataDir,
+          dbPath: join(dataDir, 'barsbookkeeper.sqlite'),
+          filesDir: join(dataDir, 'files'),
+          logicModel: 'test',
+          logicReasoningEffort: 'low',
+          fastModel: 'test',
+          fastReasoningEffort: 'low',
+        },
+        [
+          '--host',
+          'https://toast.example.test',
+          '--restaurants',
+          'retry-ok,still-down',
+          '--api-key',
+          'test-token',
+          '--start',
+          '2026-05-11T00:00:00.000Z',
+          '--end',
+          '2026-05-12T00:00:00.000Z',
+          '--max-retries',
+          '1',
+          '--retry-delay-ms',
+          '0',
+        ],
+      )
+
+      expect(result.restaurants).toBe(2)
+      expect(result.failedRestaurants).toBe(1)
+      expect(result.failures).toEqual([{ restaurantExternalId: 'still-down', error: 'toast_pull_failed:still-down:503' }])
+      expect(result.rowsPulled).toBe(1)
+      expect(result.ingest.recordsImported).toBe(1)
+      expect(attempts.get('retry-ok')).toBe(2)
+      expect(attempts.get('still-down')).toBe(2)
+      expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'toast_sale'").get()?.count).toBe(1)
+      expect(db.prepare("SELECT COUNT(*) AS count FROM inventory_events WHERE event_type = 'sale'").get()?.count).toBe(2)
     } finally {
       await rm(dataDir, { recursive: true, force: true })
     }

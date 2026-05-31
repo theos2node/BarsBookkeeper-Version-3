@@ -42,6 +42,8 @@ type ParsedOptions = {
   maxBiasBottles?: number
   recoverStaleMinutes?: number
   cursorLookbackMinutes?: number
+  toastMaxRetries?: number
+  toastRetryDelayMs?: number
   minSamples?: number
   sku?: string
   olderThanDays?: number
@@ -3373,19 +3375,25 @@ const tryPullToast = async (
   const toastWindow = resolveToastWindow(db, options)
   if (toastWindow.start) toastArgs.push('--start', toastWindow.start)
   if (toastWindow.end) toastArgs.push('--end', toastWindow.end)
+  if (options.toastMaxRetries !== undefined) toastArgs.push('--max-retries', String(options.toastMaxRetries))
+  if (options.toastRetryDelayMs !== undefined) toastArgs.push('--retry-delay-ms', String(options.toastRetryDelayMs))
 
   try {
     const result = await pullToast(db, context.config, toastArgs)
-    if (toastWindow.start && toastWindow.end) {
+    if (toastWindow.start && toastWindow.end && result.failedRestaurants === 0) {
       updateToastCursor(db, {
         start: toastWindow.start,
         end: toastWindow.end,
         source: result.source,
       })
     }
+    const failureSummary = result.failedRestaurants > 0
+      ? ` failures:${result.failedRestaurants}/${result.restaurants}`
+      : ''
     return {
-      ok: true,
-      summary: `${result.source}:${result.rowsPulled}/${result.ingest.recordsImported}${toastWindow.start && toastWindow.end ? ` ${toastWindow.start}->${toastWindow.end}` : ''}`,
+      ok: result.failedRestaurants === 0,
+      summary: `${result.source}:${result.rowsPulled}/${result.ingest.recordsImported}${failureSummary}${toastWindow.start && toastWindow.end ? ` ${toastWindow.start}->${toastWindow.end}` : ''}`,
+      error: result.failures.length > 0 ? result.failures.map((failure) => `${failure.restaurantExternalId}:${failure.error}`).join('; ') : undefined,
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -3746,6 +3754,12 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--cursor-lookback-minutes' && next) {
       parsed.cursorLookbackMinutes = positiveNumber(next, '--cursor-lookback-minutes')
+      index += 1
+    } else if (arg === '--max-retries' && next) {
+      parsed.toastMaxRetries = nonNegativeNumber(next, '--max-retries')
+      index += 1
+    } else if (arg === '--retry-delay-ms' && next) {
+      parsed.toastRetryDelayMs = nonNegativeNumber(next, '--retry-delay-ms')
       index += 1
     } else if (arg === '--min-samples' && next) {
       parsed.minSamples = nonNegativeNumber(next, '--min-samples')
