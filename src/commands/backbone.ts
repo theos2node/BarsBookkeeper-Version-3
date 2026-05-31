@@ -497,6 +497,47 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
   )
 }
 
+export const backboneMaintainHistory = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const limit = options.limit ?? 10
+  context.terminal.title('Backbone maintenance history')
+
+  await withBackendDb(context.config, async (db: any) => {
+    const rows = db
+      .prepare(
+        `SELECT *
+         FROM backbone_maintenance_runs
+         ORDER BY completed_at DESC, id DESC
+         LIMIT ?`,
+      )
+      .all(limit)
+
+    if (rows.length === 0) {
+      context.terminal.warn('No Backbone maintenance runs have been recorded yet.')
+      context.terminal.subtitle('Run `bbk backbone maintain`.')
+      return
+    }
+
+    context.terminal.table(
+      rows.map((row: any) => {
+        const summary = parseJson<MaintenanceSummary | null>(row.summary_json, null)
+        return {
+          id: row.id,
+          status: row.status,
+          completed: row.completed_at,
+          snapshot: row.snapshot_label ?? summary?.snapshot.label ?? '',
+          auditFailures: row.audit_failures,
+          auditWarnings: row.audit_warnings,
+          gaps: row.gap_count,
+          recipeCoverage: summary?.gaps.toastRecipeCoveragePct ?? '',
+          staleCounts: summary?.gaps.staleCountSkus ?? '',
+          missingCosts: summary?.gaps.missingVendorCostSkus ?? '',
+        }
+      }),
+    )
+  })
+}
+
 export const backboneActions = async (_args: string[], context: CommandContext): Promise<void> => {
   context.terminal.title('Backbone actions')
   await withBackendDb(context.config, async (db: any) => {
