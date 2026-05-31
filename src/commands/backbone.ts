@@ -129,6 +129,22 @@ type ToastIntakeSummary = {
   latestSaleEvent: string
 }
 
+type BackboneGapSummary = {
+  target: string
+  totalGaps: number
+  critical: number
+  high: number
+  medium: number
+  low: number
+  toastRecipeCoveragePct: number
+  staleCountSkus: number
+  missingVendorCostSkus: number
+  uncalibratedRiskPredictions: number
+  latestToastDocument: string
+  latestCount: string
+  latestInvoice: string
+}
+
 type SnapshotManifest = {
   counts: {
     backboneRuns: number
@@ -710,6 +726,27 @@ export const backboneIntake = async (args: string[], context: CommandContext): P
 
     context.terminal.section('Recent mapped Toast consumption')
     context.terminal.table(buildMappedToastRows(db, limit))
+  })
+}
+
+export const backboneGaps = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const limit = options.limit ?? 12
+  const maxCountAgeDays = options.maxCountAgeDays ?? 45
+  context.terminal.title('Backbone data gaps')
+
+  await withBackboneTargetDb(context, options, (db, target) => {
+    const rows = buildBackboneGapRows(db, { limit, maxCountAgeDays })
+    const summary = buildBackboneGapSummary(db, target, rows, maxCountAgeDays)
+    context.terminal.dump(summary)
+
+    if (rows.length === 0) {
+      context.terminal.success('No high-value Backbone data gaps found.')
+      return
+    }
+
+    context.terminal.section('Prioritized gaps')
+    context.terminal.table(rows)
   })
 }
 
@@ -1502,6 +1539,213 @@ const buildMappedToastRows = (db: Db, limit: number): Array<Record<string, unkno
     unit: row.unit,
     evidence: row.summary ?? '',
   }))
+}
+
+const buildBackboneGapSummary = (
+  db: Db,
+  target: string,
+  rows: Array<Record<string, unknown>>,
+  maxCountAgeDays: number,
+): BackboneGapSummary => {
+  const intake = buildToastIntakeSummary(db, target)
+  const latestCount = db
+    .prepare("SELECT MAX(occurred_at) AS latest FROM inventory_events WHERE event_type = 'adjustment'")
+    .get()
+  const latestInvoice = db
+    .prepare("SELECT MAX(occurred_at) AS latest FROM inventory_events WHERE event_type = 'purchase'")
+    .get()
+  return {
+    target,
+    totalGaps: rows.length,
+    critical: rows.filter((row) => row.priority === 'critical').length,
+    high: rows.filter((row) => row.priority === 'high').length,
+    medium: rows.filter((row) => row.priority === 'medium').length,
+    low: rows.filter((row) => row.priority === 'low').length,
+    toastRecipeCoveragePct: intake.recipeCoveragePct,
+    staleCountSkus: countStaleCountSkus(db, maxCountAgeDays),
+    missingVendorCostSkus: countMissingVendorCostSkus(db),
+    uncalibratedRiskPredictions: buildUngroundedRiskRows(db, 1_000).length,
+    latestToastDocument: intake.latestToastDocument,
+    latestCount: latestCount?.latest ? String(latestCount.latest) : '',
+    latestInvoice: latestInvoice?.latest ? String(latestInvoice.latest) : '',
+  }
+}
+
+const buildBackboneGapRows = (
+  db: Db,
+  input: { limit: number; maxCountAgeDays: number },
+): Array<Record<string, unknown>> => {
+  const rows: Array<Record<string, unknown>> = []
+
+  for (const row of buildMissingRecipeRows(db, input.limit)) {
+    rows.push({
+      priority: 'critical',
+      gap: 'map Toast recipe',
+      target: row.menuItem,
+      detail: `${row.occurrences} unresolved sale${row.occurrences === 1 ? '' : 's'}; ${row.sales} Toast unit${row.sales === 1 ? '' : 's'}`,
+      action: `toast map-recipe "${row.menuItem}" <sku> <qty> <unit>`,
+    })
+  }
+
+  rows.push(...buildStaleCountGapRows(db, input.maxCountAgeDays, input.limit))
+  rows.push(...buildMissingVendorCostGapRows(db, input.limit))
+  rows.push(...buildUngroundedRiskRows(db, input.limit).map((row) => ({
+    priority: riskGapPriority(String(row.risk)),
+    gap: 'ground risky prediction',
+    target: row.sku,
+    detail: `${row.risk} risk; predicted ${row.predicted}; confidence ${row.confidence}`,
+    action: 'add sparse count',
+  })))
+
+  const seen = new Set<string>()
+  return rows
+    .filter((row) => {
+      const key = `${row.gap}:${row.target}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((left, right) => gapPriorityRank(String(left.priority)) - gapPriorityRank(String(right.priority)))
+    .slice(0, input.limit)
+}
+
+const buildStaleCountGapRows = (
+  db: Db,
+  maxCountAgeDays: number,
+  limit: number,
+): Array<Record<string, unknown>> => {
+  const rows = db
+    .prepare(
+      `WITH latest_run AS (
+         SELECT id
+         FROM backbone_runs
+         WHERE status = 'completed'
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+       ),
+       latest_counts AS (
+         SELECT sku_id, MAX(occurred_at) AS latest_count
+         FROM inventory_events
+         WHERE event_type = 'adjustment'
+         GROUP BY sku_id
+       )
+       SELECT s.name AS sku,
+              s.unit,
+              latest_counts.latest_count,
+              p.low_stock_risk,
+              p.predicted_on_hand,
+              p.confidence
+       FROM skus s
+       LEFT JOIN latest_counts ON latest_counts.sku_id = s.id
+       LEFT JOIN backbone_predictions p
+         ON p.sku_id = s.id
+        AND p.run_id = (SELECT id FROM latest_run)
+       WHERE EXISTS (
+         SELECT 1
+         FROM inventory_events e
+         WHERE e.sku_id = s.id
+       )
+       ORDER BY
+         CASE p.low_stock_risk
+           WHEN 'critical' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'low' THEN 2
+           WHEN 'watch' THEN 3
+           ELSE 4
+         END,
+         s.name
+       LIMIT ?`,
+    )
+    .all(Math.max(limit * 3, limit))
+
+  return rows
+    .map((row: any) => {
+      const ageDays = row.latest_count ? round(ageMinutes(String(row.latest_count)) / (24 * 60), 1) : Number.POSITIVE_INFINITY
+      return { row, ageDays }
+    })
+    .filter(({ ageDays }) => ageDays > maxCountAgeDays)
+    .slice(0, limit)
+    .map(({ row, ageDays }: { row: any; ageDays: number }) => {
+      const risk = row.low_stock_risk ? String(row.low_stock_risk) : 'unknown'
+      return {
+        priority: risk === 'critical' || risk === 'high' ? 'high' : 'medium',
+        gap: 'refresh sparse count',
+        target: row.sku,
+        detail: row.latest_count
+          ? `latest count ${ageDays}d old; risk ${risk}`
+          : `no hand count yet; risk ${risk}`,
+        action: `ingest count for ${row.sku}`,
+      }
+    })
+}
+
+const buildMissingVendorCostGapRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
+  const rows = db
+    .prepare(
+      `SELECT s.name AS sku,
+              COUNT(DISTINCT e.id) AS event_count,
+              MAX(e.occurred_at) AS latest_event
+       FROM skus s
+       JOIN inventory_events e ON e.sku_id = s.id
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM vendor_items vi
+         WHERE vi.sku_id = s.id
+           AND vi.active = 1
+           AND vi.price IS NOT NULL
+       )
+       GROUP BY s.id
+       ORDER BY event_count DESC, latest_event DESC, s.name
+       LIMIT ?`,
+    )
+    .all(limit)
+
+  return rows.map((row: any) => ({
+    priority: 'medium',
+    gap: 'add invoice/vendor cost',
+    target: row.sku,
+    detail: `${row.event_count} inventory event${toNumber(row.event_count) === 1 ? '' : 's'} but no active priced vendor item`,
+    action: `ingest invoice for ${row.sku}`,
+  }))
+}
+
+const countStaleCountSkus = (db: Db, maxCountAgeDays: number): number =>
+  buildStaleCountGapRows(db, maxCountAgeDays, 1_000).length
+
+const countMissingVendorCostSkus = (db: Db): number =>
+  toNumber(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM skus s
+         WHERE EXISTS (
+           SELECT 1
+           FROM inventory_events e
+           WHERE e.sku_id = s.id
+         )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM vendor_items vi
+             WHERE vi.sku_id = s.id
+               AND vi.active = 1
+               AND vi.price IS NOT NULL
+           )`,
+      )
+      .get()?.count,
+  )
+
+const gapPriorityRank = (priority: string): number => {
+  if (priority === 'critical') return 0
+  if (priority === 'high') return 1
+  if (priority === 'medium') return 2
+  return 3
+}
+
+const riskGapPriority = (risk: string): 'critical' | 'high' | 'medium' | 'low' => {
+  if (risk === 'critical') return 'critical'
+  if (risk === 'high') return 'high'
+  if (risk === 'low' || risk === 'watch') return 'medium'
+  return 'low'
 }
 
 const buildUngroundedRiskRows = (db: Db, limit: number): Array<Record<string, unknown>> => {

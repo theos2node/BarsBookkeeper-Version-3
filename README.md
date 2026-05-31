@@ -53,6 +53,7 @@ npm run bbk -- backbone snapshot --label before-migration
 npm run bbk -- backbone snapshot-verify --label before-migration
 npm run bbk -- backbone snapshot-restore --label before-migration --env restore-check
 npm run bbk -- backbone drift
+npm run bbk -- backbone gaps
 npm run bbk -- backbone status
 npm run bbk -- backbone verify --env acceptance --days 60
 npm run bbk -- backbone acceptance --env acceptance-drill --days 60
@@ -80,6 +81,7 @@ npm run bbk -- backbone snapshot-verify --label nightly
 npm run bbk -- backbone snapshot-restore --label nightly --env nightly-restore-check
 npm run bbk -- backbone actions
 npm run bbk -- backbone intake
+npm run bbk -- backbone gaps
 npm run bbk -- backbone accuracy
 npm run bbk -- backbone memory
 npm run bbk -- backbone drift
@@ -97,6 +99,8 @@ npm run bbk -- backbone env-prune --older-than-days 14
 `bbk backbone plan` runs the model across multiple horizons and summarizes which bottles become risky first, so ordering can move before a low-stock item becomes urgent.
 
 `bbk backbone intake` shows how much Toast history is becoming usable ingredient consumption. It reports recipe coverage, mapped consumption events, missing-recipe backlog, and recent mapped Toast consumption so blind spots are visible before they pollute predictions.
+
+`bbk backbone gaps` prioritizes the smallest missing inputs that would most improve the model: unmapped Toast recipes, stale or missing sparse counts, missing invoice/vendor costs, and risky predictions that still lack calibration memory.
 
 When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit>`. The command stores the recipe ingredient, backfills prior unresolved Toast sale documents into inventory consumption, and suppresses the related missing-recipe review task once the backlog has been made usable.
 
