@@ -1139,6 +1139,12 @@ export const backboneTrust = async (args: string[], context: CommandContext): Pr
     const gapRows = buildBackboneGapRows(db, { limit, maxCountAgeDays })
     const gapSummary = buildBackboneGapSummary(db, 'base', gapRows, maxCountAgeDays)
     const predictionRisk = buildPredictionTrustSummary(db)
+    const learningDrift = buildLearningDriftSummary(db, 'base', {
+      minSamples: 3,
+      maxBottleMae: 0.25,
+      maxBiasBottles: 0.2,
+      maxFeedbackAgeDays: maxCountAgeDays,
+    })
     const latestVerification = latestVerificationTrustRow(db)
     const latestMaintenance = latestMaintenanceTrustRow(db)
     const readinessScore = Math.max(0, Math.min(100, 100 - failures.length * 25 - warnings.length * 7 - Math.min(gapRows.length, 8) * 3))
@@ -1159,6 +1165,8 @@ export const backboneTrust = async (args: string[], context: CommandContext): Pr
       nonOkRisks: predictionRisk.nonOkRisks,
       maxStockoutProbability: predictionRisk.maxStockoutProbability,
       avgStockoutProbability: predictionRisk.avgStockoutProbability,
+      feedbackBandCoverage: learningDrift.feedbackBandCoverage,
+      outOfBandFeedback: learningDrift.outOfBandSamples,
       latestVerification: latestVerification.status,
       latestMaintenance: latestMaintenance.status,
       toastRecipeCoveragePct: gapSummary.toastRecipeCoveragePct,
@@ -1187,6 +1195,13 @@ export const backboneTrust = async (args: string[], context: CommandContext): Pr
         gate: 'uncertainty risk',
         status: predictionRisk.maxStockoutProbability >= 0.45 ? 'warn' : predictionRisk.predictionCount > 0 ? 'pass' : 'missing',
         detail: `${predictionRisk.nonOkRisks} non-ok risk${predictionRisk.nonOkRisks === 1 ? '' : 's'}; max stockout ${predictionRisk.maxStockoutProbability}`,
+      },
+      {
+        gate: 'calibration coverage',
+        status: learningDrift.feedbackSamples > 0 && learningDrift.feedbackBandCoverage >= 0.8 ? 'pass' : 'warn',
+        detail: learningDrift.feedbackSamples > 0
+          ? `${learningDrift.feedbackBandCoverage} band coverage; ${learningDrift.outOfBandSamples} out-of-band feedback sample${learningDrift.outOfBandSamples === 1 ? '' : 's'}`
+          : 'no scored feedback with prediction bands',
       },
       {
         gate: 'data gaps',
@@ -3547,11 +3562,18 @@ const buildBackboneAudit = (
     detail: `${feedbackCount} feedback item${feedbackCount === 1 ? '' : 's'}, ${calibrationCount} calibrated SKU${calibrationCount === 1 ? '' : 's'}`,
   })
   checks.push({
+    check: 'feedback band coverage',
+    status: feedbackCount > 0 && learningDrift.feedbackBandCoverage >= 0.8 ? 'pass' : 'warn',
+    detail: feedbackCount === 0
+      ? 'no scored feedback with prediction bands yet'
+      : `${learningDrift.feedbackBandCoverage} band coverage; ${learningDrift.outOfBandSamples} out-of-band feedback sample${learningDrift.outOfBandSamples === 1 ? '' : 's'}`,
+  })
+  checks.push({
     check: 'learning drift',
     status: learningDrift.status,
     detail: feedbackCount === 0
       ? 'no scored feedback yet'
-      : `bottle MAE ${learningDrift.bottleMae}, bias ${learningDrift.biasBottles} bottles, latest ${learningDrift.feedbackAgeDays ?? '?'}d old; ${learningDrift.statusReason}`,
+      : `bottle MAE ${learningDrift.bottleMae}, bias ${learningDrift.biasBottles} bottles, band coverage ${learningDrift.feedbackBandCoverage}, latest ${learningDrift.feedbackAgeDays ?? '?'}d old; ${learningDrift.statusReason}`,
   })
   checks.push({
     check: 'toast cursor',
