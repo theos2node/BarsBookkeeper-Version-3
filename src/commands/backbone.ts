@@ -170,6 +170,22 @@ type SnapshotRestoreArtifact = {
   forced: boolean
 }
 
+type MaintenanceSummary = {
+  snapshot: {
+    label: string
+    path: string
+    manifestPath: string
+    sizeBytes: number
+    integrity: 'ok'
+  }
+  audit: {
+    checks: number
+    failures: number
+    warnings: number
+  }
+  gaps: BackboneGapSummary
+}
+
 type HorizonRun = {
   horizonDays: number
   predictions: Array<{
@@ -403,6 +419,82 @@ export const backboneSnapshotRestore = async (args: string[], context: CommandCo
   })
   context.terminal.success(`Snapshot ${label} restored into environment ${envName}.`)
   context.terminal.dump(restored)
+}
+
+export const backboneMaintain = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const startedAt = new Date().toISOString()
+  const label = cleanEnvName(options.label ?? `maintenance-${startedAt.replace(/[:.]/g, '-')}`)
+  const maxAgeMinutes = options.maxAgeMinutes ?? 60
+  const maxRunAgeMinutes = options.maxRunAgeMinutes ?? maxAgeMinutes
+  const maxCountAgeDays = options.maxCountAgeDays ?? 45
+  const limit = options.limit ?? 12
+
+  context.terminal.title('Backbone maintenance')
+  const snapshot = await createBackboneSnapshotArtifact(context, label)
+  await assertSnapshotReadable(snapshot.snapshotPath, snapshot.manifestPath)
+  context.terminal.section('Snapshot gate')
+  context.terminal.table([
+    {
+      label: snapshot.label,
+      integrity: 'ok',
+      sizeBytes: snapshot.sizeBytes,
+      path: snapshot.snapshotPath,
+      manifest: snapshot.manifestPath,
+    },
+  ])
+
+  const summary = await withBackendDb(context.config, async (db: any): Promise<MaintenanceSummary> => {
+    const auditChecks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays })
+    const auditFailures = auditChecks.filter((check) => check.status === 'fail')
+    const auditWarnings = auditChecks.filter((check) => check.status === 'warn')
+    const gapRows = buildBackboneGapRows(db, { limit, maxCountAgeDays })
+    const gaps = buildBackboneGapSummary(db, 'base', gapRows, maxCountAgeDays)
+    const maintenanceSummary: MaintenanceSummary = {
+      snapshot: {
+        label: snapshot.label,
+        path: snapshot.snapshotPath,
+        manifestPath: snapshot.manifestPath,
+        sizeBytes: snapshot.sizeBytes,
+        integrity: 'ok',
+      },
+      audit: {
+        checks: auditChecks.length,
+        failures: auditFailures.length,
+        warnings: auditWarnings.length,
+      },
+      gaps,
+    }
+
+    context.terminal.section('Audit gate')
+    context.terminal.table(auditChecks)
+    context.terminal.section('Data gap gate')
+    context.terminal.dump(gaps)
+    if (gapRows.length > 0) context.terminal.table(gapRows)
+
+    persistMaintenanceRun(db, {
+      startedAt,
+      status: auditFailures.length > 0 ? 'failed' : auditWarnings.length > 0 ? 'warn' : 'passed',
+      snapshot,
+      auditFailures: auditFailures.length,
+      auditWarnings: auditWarnings.length,
+      gapCount: gapRows.length,
+      summary: maintenanceSummary,
+    })
+
+    if (auditFailures.length > 0) {
+      throw new Error(`backbone_maintenance_failed:${auditFailures.map((check) => check.check).join(',')}`)
+    }
+    return maintenanceSummary
+  })
+
+  context.terminal.status(
+    summary.audit.warnings > 0 || summary.gaps.totalGaps > 0 ? 'warn' : 'ok',
+    summary.audit.warnings > 0
+      ? `Backbone maintenance passed with ${summary.audit.warnings} warning${summary.audit.warnings === 1 ? '' : 's'}.`
+      : 'Backbone maintenance passed.',
+    summary.gaps.totalGaps > 0 ? `${summary.gaps.totalGaps} data gap${summary.gaps.totalGaps === 1 ? '' : 's'} recorded` : undefined,
+  )
 }
 
 export const backboneActions = async (_args: string[], context: CommandContext): Promise<void> => {
@@ -956,6 +1048,7 @@ const buildSnapshotManifest = (
       backboneCalibrations: scalarCount(db, 'backbone_calibrations'),
       backboneListenerCycles: scalarCount(db, 'backbone_listener_cycles'),
       backboneVerifications: scalarCount(db, 'backbone_verifications'),
+      backboneMaintenanceRuns: scalarCount(db, 'backbone_maintenance_runs'),
       openReviewTasks: toNumber(db.prepare("SELECT COUNT(*) AS count FROM openclaw_decisions WHERE state = 'needs_review'").get()?.count),
     },
     latestRun: latestRun
@@ -2608,6 +2701,36 @@ const persistVerificationResult = async (
       stringifyJson(summary),
     )
   })
+}
+
+const persistMaintenanceRun = (
+  db: Db,
+  input: {
+    startedAt: string
+    status: 'passed' | 'warn' | 'failed'
+    snapshot: SnapshotArtifact
+    auditFailures: number
+    auditWarnings: number
+    gapCount: number
+    summary: MaintenanceSummary
+  },
+): void => {
+  db.prepare(
+    `INSERT INTO backbone_maintenance_runs
+     (started_at, completed_at, status, snapshot_label, snapshot_path, manifest_path,
+      audit_failures, audit_warnings, gap_count, summary_json)
+     VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.startedAt,
+    input.status,
+    input.snapshot.label,
+    input.snapshot.snapshotPath,
+    input.snapshot.manifestPath,
+    input.auditFailures,
+    input.auditWarnings,
+    input.gapCount,
+    stringifyJson(input.summary),
+  )
 }
 
 const buildBackboneAudit = (

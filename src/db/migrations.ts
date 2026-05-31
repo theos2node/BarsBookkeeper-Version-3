@@ -352,6 +352,29 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_backbone_runtime_locks_expires ON backbone_runtime_locks(expires_at);
     `,
   },
+  {
+    id: 8,
+    name: 'backbone_maintenance_runs',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_maintenance_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL CHECK (status IN ('passed', 'warn', 'failed')),
+        snapshot_label TEXT,
+        snapshot_path TEXT,
+        manifest_path TEXT,
+        audit_failures INTEGER NOT NULL DEFAULT 0,
+        audit_warnings INTEGER NOT NULL DEFAULT 0,
+        gap_count INTEGER NOT NULL DEFAULT 0,
+        summary_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_maintenance_runs_completed ON backbone_maintenance_runs(completed_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_maintenance_runs_status ON backbone_maintenance_runs(status);
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

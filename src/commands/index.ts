@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
+import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -102,6 +102,12 @@ export const createCommands = (
     usage: 'bbk backbone snapshot-restore --label <name> --env <environment> [--force]',
     summary: 'Restore a Backbone snapshot into an isolated environment for inspection.',
     handler: backboneSnapshotRestore,
+  },
+  {
+    path: ['backbone', 'maintain'],
+    usage: 'bbk backbone maintain [--label <name>] [--limit <n>] [--max-age-minutes <minutes>] [--max-count-age-days <days>]',
+    summary: 'Run unattended Backbone maintenance: snapshot verification, audit checks, and data-gap persistence.',
+    handler: backboneMaintain,
   },
   {
     path: ['backbone', 'plan'],

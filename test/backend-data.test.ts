@@ -47,6 +47,7 @@ describe('backend data slice', () => {
         'forecasts',
         'order_recommendations',
         'audit_log',
+        'backbone_maintenance_runs',
       ]),
     )
   })

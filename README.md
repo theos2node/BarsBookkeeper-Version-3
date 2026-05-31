@@ -52,6 +52,7 @@ npm run bbk -- backbone service --interval-ms 300000
 npm run bbk -- backbone snapshot --label before-migration
 npm run bbk -- backbone snapshot-verify --label before-migration
 npm run bbk -- backbone snapshot-restore --label before-migration --env restore-check
+npm run bbk -- backbone maintain
 npm run bbk -- backbone drift
 npm run bbk -- backbone gaps
 npm run bbk -- backbone status
@@ -79,6 +80,7 @@ npm run bbk -- backbone service --interval-ms 300000
 npm run bbk -- backbone snapshot --label nightly
 npm run bbk -- backbone snapshot-verify --label nightly
 npm run bbk -- backbone snapshot-restore --label nightly --env nightly-restore-check
+npm run bbk -- backbone maintain
 npm run bbk -- backbone actions
 npm run bbk -- backbone intake
 npm run bbk -- backbone gaps
@@ -136,6 +138,8 @@ Only one listener is allowed to run against a database at a time. `bbk backbone 
 Successful listener pulls with a known time window update `backbone_toast_cursor`, allowing API polling to resume from the last successful Toast window instead of repeatedly asking for the same default range.
 
 Use `bbk backbone snapshot --label <name>` before risky changes or as a scheduled maintenance step. It writes a consistent SQLite backup plus a JSON manifest under `data/backups/`, including row counts, latest Backbone run metrics, latest verification summary, and Toast cursor state. Use `bbk backbone snapshot-verify --label <name>` to run SQLite integrity checks and confirm the backup matches its manifest. Use `bbk backbone snapshot-restore --label <name> --env <environment>` to restore into an isolated environment for inspection without overwriting the base database.
+
+Use `bbk backbone maintain` for unattended health maintenance. It creates and verifies a SQLite snapshot, runs the operational audit, records prioritized data gaps, and persists the result in `backbone_maintenance_runs`; hard audit failures exit non-zero, while warnings and gaps are recorded for review.
 
 Use `bbk backbone audit` as an operational trust gate. It checks for a recent listener heartbeat, fresh prediction run, listener-to-prediction linkage, sparse count grounding, recent listener failures, prediction coverage, low-stock signals, cost signals, feedback calibration, learning drift, and Toast cursor state. Hard failures exit non-zero; missing count, cost, calibration, drift, or cursor signals are warnings so a quiet bar day does not block operations. Use `--max-age-minutes` for listener heartbeat freshness, `--max-run-age-minutes` when prediction freshness needs a different threshold, and `--max-count-age-days` for sparse bottle-count cadence.
 
