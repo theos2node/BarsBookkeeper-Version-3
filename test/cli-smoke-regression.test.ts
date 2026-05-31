@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -277,5 +278,35 @@ process.exit(1)
     ).toBe(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'completed'")).toBe(1)
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runs')).toBe(1)
+  })
+
+  it('dry-runs and force-prunes isolated Backbone environments safely', async () => {
+    await expectCliOk(['setup'], dataDir)
+    await expectCliOk(['backbone', 'simulate', '--env', 'prune-a', '--days', '30'], dataDir)
+    await expectCliOk(['backbone', 'simulate', '--env', 'prune-b', '--days', '30'], dataDir)
+
+    const pruneAPath = join(dataDir, 'environments', 'prune-a', 'barsbookkeeper.sqlite')
+    const pruneBPath = join(dataDir, 'environments', 'prune-b', 'barsbookkeeper.sqlite')
+    expect(existsSync(pruneAPath)).toBe(true)
+    expect(existsSync(pruneBPath)).toBe(true)
+
+    const dryRun = await expectCliOk(['backbone', 'env-prune', '--older-than-days', '0', '--keep', '0'], dataDir)
+    expect(dryRun).toContain('Backbone environment prune')
+    expect(dryRun).toContain('dryRun: true')
+    expect(dryRun).toContain('would-prune')
+    expect(dryRun).toContain('Dry run only')
+    expect(existsSync(pruneAPath)).toBe(true)
+    expect(existsSync(pruneBPath)).toBe(true)
+
+    const forced = await expectCliOk(['backbone', 'env-prune', '--older-than-days', '0', '--keep', '0', '--force'], dataDir)
+    expect(forced).toContain('dryRun: false')
+    expect(forced).toContain('Pruned 2 Backbone environments.')
+    expect(existsSync(pruneAPath)).toBe(false)
+    expect(existsSync(pruneBPath)).toBe(false)
+
+    db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    expect(
+      scalar(db, "SELECT COUNT(*) AS value FROM backbone_environments WHERE name IN ('prune-a', 'prune-b')"),
+    ).toBe(0)
   })
 })

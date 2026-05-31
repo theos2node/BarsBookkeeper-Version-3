@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { mkdir, rm } from 'node:fs/promises'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { openDatabase, parseJson, toNumber, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
 import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel } from '../backbone/index.js'
@@ -37,6 +37,9 @@ type ParsedOptions = {
   cursorLookbackMinutes?: number
   minSamples?: number
   sku?: string
+  olderThanDays?: number
+  keep?: number
+  force?: boolean
 }
 
 type AuditCheck = {
@@ -80,6 +83,15 @@ type HorizonRun = {
     confidence: number
     costSignal: string
   }>
+}
+
+type EnvironmentPruneCandidate = {
+  id: number
+  env: string
+  path: string
+  lastSeen: string
+  ageDays: number
+  action: 'skip-unsafe-path' | 'keep-newest' | 'would-prune' | 'prune' | 'keep-young'
 }
 
 type PredictionEvidence = {
@@ -241,6 +253,82 @@ export const backboneEnvs = async (_args: string[], context: CommandContext): Pr
         path: row.db_path,
       })),
     )
+  })
+}
+
+export const backboneEnvPrune = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const olderThanDays = options.olderThanDays ?? 7
+  const keep = options.keep ?? 20
+  const dryRun = !options.force
+  const environmentRoot = resolve(context.config.dataDir, 'environments')
+  const now = Date.now()
+
+  context.terminal.title('Backbone environment prune')
+  context.terminal.dump({ dryRun, olderThanDays, keep, environmentRoot })
+
+  await withBackendDb(context.config, async (db: any) => {
+    const rows = db
+      .prepare(
+        `SELECT id, name, db_path, description, created_at, last_run_at
+         FROM backbone_environments
+         ORDER BY COALESCE(last_run_at, created_at) DESC, id DESC`,
+      )
+      .all()
+
+    const candidates: EnvironmentPruneCandidate[] = rows
+      .map((row: any, index: number) => {
+        const lastSeen = String(row.last_run_at ?? row.created_at)
+        const ageDays = Math.max(0, (now - new Date(lastSeen).getTime()) / 86_400_000)
+        const envDir = resolve(dirname(String(row.db_path)))
+        const safePath = isInsideDirectory(environmentRoot, envDir)
+        const keepByRank = index < keep
+        const oldEnough = ageDays >= olderThanDays
+        return {
+          id: toNumber(row.id),
+          env: String(row.name),
+          path: envDir,
+          lastSeen,
+          ageDays,
+          action: !safePath
+            ? 'skip-unsafe-path'
+            : keepByRank
+              ? 'keep-newest'
+              : oldEnough
+                ? dryRun
+                  ? 'would-prune'
+                  : 'prune'
+                : 'keep-young',
+        }
+      })
+      .filter((row: EnvironmentPruneCandidate) => row.action === 'would-prune' || row.action === 'prune' || row.action === 'skip-unsafe-path')
+
+    if (candidates.length === 0) {
+      context.terminal.success('No Backbone environments matched prune policy.')
+      return
+    }
+
+    context.terminal.table(
+      candidates.map((row) => ({
+        env: row.env,
+        action: row.action,
+        ageDays: round(row.ageDays, 2),
+        lastSeen: row.lastSeen,
+        path: row.path,
+      })),
+    )
+
+    const prunable = candidates.filter((row) => row.action === 'would-prune' || row.action === 'prune')
+    if (dryRun) {
+      context.terminal.warn(`Dry run only; add --force to delete ${prunable.length} environment${prunable.length === 1 ? '' : 's'}.`)
+      return
+    }
+
+    for (const row of prunable) {
+      await rm(row.path, { force: true, recursive: true })
+      db.prepare('DELETE FROM backbone_environments WHERE id = ?').run(row.id)
+    }
+    context.terminal.success(`Pruned ${prunable.length} Backbone environment${prunable.length === 1 ? '' : 's'}.`)
   })
 }
 
@@ -903,6 +991,11 @@ const ageMinutes = (timestamp: unknown): number => {
   return Math.max(0, (Date.now() - value) / 60_000)
 }
 
+const isInsideDirectory = (root: string, candidate: string): boolean => {
+  const relativePath = relative(root, candidate)
+  return relativePath !== '' && !relativePath.startsWith('..') && !isAbsolute(relativePath)
+}
+
 const tryPullToast = async (
   db: any,
   context: CommandContext,
@@ -1234,6 +1327,14 @@ const parseOptions = (args: string[]): ParsedOptions => {
     } else if (arg === '--sku' && next) {
       parsed.sku = next
       index += 1
+    } else if (arg === '--older-than-days' && next) {
+      parsed.olderThanDays = nonNegativeNumber(next, '--older-than-days')
+      index += 1
+    } else if (arg === '--keep' && next) {
+      parsed.keep = nonNegativeNumber(next, '--keep')
+      index += 1
+    } else if (arg === '--force') {
+      parsed.force = true
     }
   }
   return parsed

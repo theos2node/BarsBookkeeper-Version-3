@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAccuracy, backboneActions, backboneAudit, backboneEnvs, backboneExplain, backboneListen, backboneMatrix, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneAccuracy, backboneActions, backboneAudit, backboneEnvPrune, backboneEnvs, backboneExplain, backboneListen, backboneMatrix, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -108,6 +108,12 @@ export const createCommands = (
     usage: 'bbk backbone envs',
     summary: 'List isolated Backbone simulation environments and latest run state.',
     handler: backboneEnvs,
+  },
+  {
+    path: ['backbone', 'env-prune'],
+    usage: 'bbk backbone env-prune [--older-than-days <days>] [--keep <n>] [--force]',
+    summary: 'Dry-run or delete old isolated Backbone simulation environments.',
+    handler: backboneEnvPrune,
   },
   {
     path: ['backbone', 'listen'],

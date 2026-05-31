@@ -69,6 +69,7 @@ npm run bbk -- backbone accuracy
 npm run bbk -- backbone explain --sku "Backbone Vodka 1L"
 npm run bbk -- backbone audit
 npm run bbk -- backbone envs
+npm run bbk -- backbone env-prune --older-than-days 14
 ```
 
 `bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals.
@@ -105,9 +106,11 @@ npm run bbk -- backbone simulate --env vendor-drift --scenario price-drift --day
 npm run bbk -- backbone accuracy --env weekend-swing --min-samples 3
 npm run bbk -- backbone matrix --env month-end-matrix --days 30
 npm run bbk -- backbone envs
+npm run bbk -- backbone env-prune --older-than-days 14 --keep 20
+npm run bbk -- backbone env-prune --older-than-days 14 --keep 20 --force
 ```
 
-The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, hidden-shrink notes through sparse counts, and a validation day. It passes only when bottle-count error, low-stock detection, cost-cutting detection, shrink detection, invoice-driven vendor savings, and feedback calibration all clear deterministic thresholds. The matrix command runs the steady, busy, slow, shrink, volatile weekend-demand, and price-drift scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database.
+The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, hidden-shrink notes through sparse counts, and a validation day. It passes only when bottle-count error, low-stock detection, cost-cutting detection, shrink detection, invoice-driven vendor savings, and feedback calibration all clear deterministic thresholds. The matrix command runs the steady, busy, slow, shrink, volatile weekend-demand, and price-drift scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database. `bbk backbone env-prune` is dry-run by default; add `--force` only after reviewing the table of environments it will remove.
 
 ## Terminal Console
 
