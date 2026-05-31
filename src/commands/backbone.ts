@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { openDatabase, toNumber } from '../db/database.js'
+import { openDatabase, toNumber, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
 import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel } from '../backbone/index.js'
 import {
@@ -31,6 +31,7 @@ type ParsedOptions = {
   scenario?: BackboneSimulationScenario
   maxAgeMinutes?: number
   cursorLookbackMinutes?: number
+  minSamples?: number
 }
 
 type AuditCheck = {
@@ -50,6 +51,17 @@ type OpenClawCycleResult = {
   reviewItems: number
   summary: string
   error?: string
+}
+
+type AccuracySummary = {
+  target: string
+  feedbackSamples: number
+  calibratedSkus: number
+  bottleMae: number
+  maxBottleError: number
+  meanAbsErrorQty: number
+  biasQty: number
+  latestFeedback: string
 }
 
 export const backboneRun = async (args: string[], context: CommandContext): Promise<void> => {
@@ -156,6 +168,36 @@ export const backboneEnvs = async (_args: string[], context: CommandContext): Pr
   })
 }
 
+export const backboneAccuracy = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const minSamples = options.minSamples ?? 1
+  context.terminal.title('Backbone accuracy')
+
+  await withBackboneTargetDb(context, options, (db, target) => {
+    const summary = buildAccuracySummary(db, target)
+    context.terminal.dump(summary)
+
+    if (summary.feedbackSamples === 0) {
+      context.terminal.warn('No Backbone feedback has been scored yet.')
+      context.terminal.subtitle('Run `bbk backbone simulate --env <name>` or add a later hand count after a prediction run.')
+      return
+    }
+
+    context.terminal.status(
+      summary.feedbackSamples >= minSamples ? 'ok' : 'warn',
+      `feedback sample floor: ${summary.feedbackSamples}/${minSamples}`,
+    )
+    context.terminal.status(
+      summary.bottleMae <= 0.25 ? 'ok' : 'warn',
+      `bottle MAE: ${summary.bottleMae}`,
+      summary.bottleMae <= 0.25 ? 'within target' : 'above 0.25 bottle target',
+    )
+
+    context.terminal.section('SKU accuracy')
+    context.terminal.table(buildSkuAccuracyRows(db))
+  })
+}
+
 export const backboneAudit = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const maxAgeMinutes = options.maxAgeMinutes ?? 60
@@ -179,6 +221,91 @@ export const backboneAudit = async (args: string[], context: CommandContext): Pr
         : 'Backbone audit passed.',
     )
   })
+}
+
+const withBackboneTargetDb = async <T>(
+  context: CommandContext,
+  options: ParsedOptions,
+  work: (db: Db, target: string) => T,
+): Promise<T> => {
+  if (!options.env) {
+    return withBackendDb(context.config, async (db: any) => work(db, 'base'))
+  }
+
+  return withBackendDb(context.config, async (controlDb: any) => {
+    const environment = controlDb
+      .prepare('SELECT name, db_path FROM backbone_environments WHERE name = ?')
+      .get(options.env)
+    if (!environment) throw new Error(`backbone_environment_not_found:${options.env}`)
+
+    const dbPath = String(environment.db_path)
+    if (!existsSync(dbPath)) throw new Error(`backbone_environment_db_missing:${options.env}`)
+
+    const envDb = openDatabase(dbPath)
+    try {
+      migrateDatabase(envDb)
+      return work(envDb, String(environment.name))
+    } finally {
+      envDb.close()
+    }
+  })
+}
+
+const buildAccuracySummary = (db: Db, target: string): AccuracySummary => {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS feedback_samples,
+              COUNT(DISTINCT sku_id) AS calibrated_skus,
+              AVG(bottle_error) AS bottle_mae,
+              MAX(bottle_error) AS max_bottle_error,
+              AVG(absolute_error_quantity) AS mean_abs_error_qty,
+              AVG(error_quantity) AS bias_qty,
+              MAX(evaluated_at) AS latest_feedback
+       FROM backbone_feedback`,
+    )
+    .get()
+
+  return {
+    target,
+    feedbackSamples: toNumber(row?.feedback_samples),
+    calibratedSkus: toNumber(row?.calibrated_skus),
+    bottleMae: round(toNumber(row?.bottle_mae), 4),
+    maxBottleError: round(toNumber(row?.max_bottle_error), 4),
+    meanAbsErrorQty: round(toNumber(row?.mean_abs_error_qty), 2),
+    biasQty: round(toNumber(row?.bias_qty), 2),
+    latestFeedback: row?.latest_feedback ? String(row.latest_feedback) : '',
+  }
+}
+
+const buildSkuAccuracyRows = (db: Db): Array<Record<string, unknown>> => {
+  const rows = db
+    .prepare(
+      `SELECT s.name AS sku,
+              COUNT(f.id) AS samples,
+              AVG(f.bottle_error) AS bottle_mae,
+              MAX(f.bottle_error) AS max_bottle_error,
+              AVG(f.error_quantity) AS bias_qty,
+              c.usage_adjustment_daily,
+              c.confidence_adjustment,
+              MAX(f.evaluated_at) AS latest_feedback
+       FROM backbone_feedback f
+       JOIN skus s ON s.id = f.sku_id
+       LEFT JOIN backbone_calibrations c ON c.sku_id = f.sku_id
+       GROUP BY f.sku_id
+       ORDER BY bottle_mae DESC, samples DESC, sku`,
+    )
+    .all()
+
+  return rows.map((row: any) => ({
+    sku: row.sku,
+    samples: row.samples,
+    bottleMae: round(toNumber(row.bottle_mae), 4),
+    maxBottleError: round(toNumber(row.max_bottle_error), 4),
+    bias: round(toNumber(row.bias_qty), 2),
+    dailyAdjust: round(toNumber(row.usage_adjustment_daily), 4),
+    confidenceAdjust: round(toNumber(row.confidence_adjustment), 3),
+    latest: row.latest_feedback ?? '',
+  }))
 }
 
 const environmentLatestRun = (dbPath: string): string => {
@@ -807,10 +934,15 @@ const parseOptions = (args: string[]): ParsedOptions => {
     } else if (arg === '--cursor-lookback-minutes' && next) {
       parsed.cursorLookbackMinutes = positiveNumber(next, '--cursor-lookback-minutes')
       index += 1
+    } else if (arg === '--min-samples' && next) {
+      parsed.minSamples = nonNegativeNumber(next, '--min-samples')
+      index += 1
     }
   }
   return parsed
 }
+
+const round = (value: number, decimals = 3): number => Number(value.toFixed(decimals))
 
 const positiveNumber = (value: string, flag: string): number => {
   const number = toNumber(value)
