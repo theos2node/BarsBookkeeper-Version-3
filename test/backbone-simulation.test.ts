@@ -303,4 +303,58 @@ describe('Backbone prediction model', () => {
     expect(evidence.countAgeDays).toBeNull()
     expect(db.prepare('SELECT COUNT(*) AS count FROM vendor_item_prices WHERE sku_id = ?').get(skuId)?.count).toBe(2)
   })
+
+  it('backfills legacy invoice prices into time-aware vendor evidence', () => {
+    const vendorId = ensureVendor(db, 'Legacy Timeline Vendor')
+    const skuId = ensureSku(db, { name: 'Legacy Timeline Vodka 1L', unit: 'ml', category: 'liquor' })
+    ensureVendorItem(db, {
+      vendorId,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 20,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    ingestInvoices(db, [
+      {
+        vendor: 'Legacy Timeline Vendor',
+        invoiceNumber: 'LEGACY-TIMELINE-OLD',
+        invoiceDate: '2026-05-01T09:00:00.000Z',
+        sku: 'Legacy Timeline Vodka 1L',
+        quantity: 2000,
+        unit: 'ml',
+        unitCost: 0.02,
+        category: 'liquor',
+      },
+      {
+        vendor: 'Legacy Timeline Vendor',
+        invoiceNumber: 'LEGACY-TIMELINE-FUTURE',
+        invoiceDate: '2026-05-20T09:00:00.000Z',
+        sku: 'Legacy Timeline Vodka 1L',
+        quantity: 2000,
+        unit: 'ml',
+        unitCost: 0.009,
+        category: 'liquor',
+      },
+    ])
+
+    db.prepare('DELETE FROM vendor_item_prices WHERE sku_id = ?').run(skuId)
+    db.prepare('DELETE FROM schema_migrations WHERE id = 12').run()
+    migrateDatabase(db)
+
+    const run = runBackboneModel(db, {
+      asOf: '2026-05-10T12:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+    const evidence = JSON.parse(
+      String(db.prepare('SELECT evidence_json FROM backbone_predictions WHERE run_id = ? AND sku_id = ?').get(run.runId, skuId)?.evidence_json),
+    )
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM vendor_item_prices WHERE sku_id = ?').get(skuId)?.count).toBe(2)
+    expect(evidence.vendorCost.unitCost).toBe(0.02)
+    expect(evidence.vendorCost.price).toBe(40)
+  })
 })

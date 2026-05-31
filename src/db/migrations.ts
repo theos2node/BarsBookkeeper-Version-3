@@ -417,6 +417,52 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_vendor_item_prices_vendor_item_time ON vendor_item_prices(vendor_item_id, observed_at);
     `,
   },
+  {
+    id: 12,
+    name: 'backfill_vendor_item_price_observations',
+    sql: `
+      INSERT OR IGNORE INTO vendor_item_prices
+        (vendor_item_id, vendor_id, sku_id, observed_at, pack_size, pack_unit, price, unit_cost, source_document_id)
+      WITH legacy_invoice_prices AS (
+        SELECT e.sku_id,
+               e.source_document_id,
+               e.occurred_at,
+               ABS(e.quantity) AS pack_size,
+               e.unit AS pack_unit,
+               e.unit_cost,
+               COALESCE(
+                 NULLIF(TRIM(json_extract(sd.raw_json, '$.vendor')), ''),
+                 NULLIF(TRIM(json_extract(sd.raw_json, '$.vendorName')), ''),
+                 NULLIF(TRIM(json_extract(sd.raw_json, '$.vendorname')), ''),
+                 NULLIF(TRIM(json_extract(sd.raw_json, '$.vendor_name')), ''),
+                 NULLIF(TRIM(json_extract(d.payload_json, '$.vendorName')), ''),
+                 NULLIF(TRIM(json_extract(d.payload_json, '$.vendorname')), ''),
+                 NULLIF(TRIM(json_extract(d.payload_json, '$.vendor_name')), '')
+               ) AS vendor_name
+        FROM inventory_events e
+        JOIN source_documents sd ON sd.id = e.source_document_id
+        LEFT JOIN openclaw_decisions d ON d.id = e.decision_id
+        WHERE e.event_type = 'purchase'
+          AND e.unit_cost IS NOT NULL
+          AND e.unit_cost > 0
+          AND e.quantity > 0
+          AND sd.document_type = 'invoice'
+      )
+      SELECT vi.id,
+             vi.vendor_id,
+             legacy.sku_id,
+             legacy.occurred_at,
+             legacy.pack_size,
+             legacy.pack_unit,
+             legacy.unit_cost * legacy.pack_size,
+             legacy.unit_cost,
+             legacy.source_document_id
+      FROM legacy_invoice_prices legacy
+      JOIN vendors v ON v.name = legacy.vendor_name
+      JOIN vendor_items vi ON vi.vendor_id = v.id AND vi.sku_id = legacy.sku_id
+      WHERE legacy.vendor_name IS NOT NULL;
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {
