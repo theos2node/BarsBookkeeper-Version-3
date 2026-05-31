@@ -132,6 +132,7 @@ For continuous terminal operation, run the listener. It attempts a Toast pull ev
 
 ```sh
 npm run bbk -- backbone listen
+npm run bbk -- backbone listen --once
 npm run bbk -- backbone listen --cycles 3 --interval-ms 1000
 npm run bbk -- backbone listen --toast-file ./samples/toast-orders.json --cycles 1
 npm run bbk -- backbone listen --skip-openclaw --cycles 1

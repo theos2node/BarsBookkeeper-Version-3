@@ -26,6 +26,7 @@ type ParsedOptions = {
   trainingDays?: number
   days?: number
   cycles?: number
+  once?: boolean
   intervalMs?: number
   toastFile?: string
   toastStart?: string
@@ -2504,7 +2505,7 @@ const environmentLatestRun = (dbPath: string): string => {
 
 export const backboneListen = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
-  const cycles = options.cycles ?? Number.POSITIVE_INFINITY
+  const cycles = options.once ? 1 : options.cycles ?? Number.POSITIVE_INFINITY
   const intervalMs = options.intervalMs ?? 5 * 60 * 1000
   const recoverStaleMinutes = options.recoverStaleMinutes ?? Math.max(15, Math.ceil((intervalMs * 3) / 60_000))
   const lockTtlMinutes = options.lockTtlMinutes ?? Math.max(5, recoverStaleMinutes, Math.ceil((intervalMs * 3) / 60_000))
@@ -2521,7 +2522,9 @@ export const backboneListen = async (args: string[], context: CommandContext): P
 
   context.terminal.title('Backbone listener')
   context.terminal.subtitle(
-    Number.isFinite(cycles)
+    options.once
+      ? `one-shot; interval: ${intervalMs}ms`
+      : Number.isFinite(cycles)
       ? `cycles: ${cycles}; interval: ${intervalMs}ms`
       : `continuous; interval: ${intervalMs}ms`,
   )
@@ -3941,6 +3944,7 @@ const parseOptions = (args: string[]): ParsedOptions => {
       parsed.cycles = positiveNumber(next, '--cycles')
       index += 1
     } else if (arg === '--once') {
+      parsed.once = true
       parsed.cycles = 1
     } else if (arg === '--interval-ms' && next) {
       parsed.intervalMs = nonNegativeNumber(next, '--interval-ms')

@@ -146,8 +146,7 @@ process.exit(1)
       [
         'backbone',
         'listen',
-        '--cycles',
-        '1',
+        '--once',
         '--interval-ms',
         '0',
         '--skip-toast',
@@ -207,6 +206,7 @@ process.exit(1)
     expect(listenOutput).toContain('listener lock acquired')
     expect(listenOutput).toContain('file:')
     expect(resilientListenOutput).toContain('OpenClaw skipped this cycle: simulated_openclaw_failure')
+    expect(resilientListenOutput).toContain('one-shot; interval: 0ms')
     expect(resilientListenOutput).toContain('Backbone listener stopped after 1 cycle')
     expect(backboneSimulation).toContain('bottleMae')
     expect(backboneSimulation).toContain('lowStockRecall')

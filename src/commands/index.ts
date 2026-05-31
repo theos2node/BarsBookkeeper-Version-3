@@ -225,7 +225,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'listen'],
-    usage: 'bbk backbone listen [--cycles <n>] [--interval-ms <ms>] [--skip-openclaw] [--max-retries <n>] [--retry-delay-ms <ms>] [--recover-stale-minutes <minutes>] [--lock-ttl-minutes <minutes>]',
+    usage: 'bbk backbone listen [--once|--cycles <n>] [--interval-ms <ms>] [--skip-openclaw] [--max-retries <n>] [--retry-delay-ms <ms>] [--recover-stale-minutes <minutes>] [--lock-ttl-minutes <minutes>]',
     summary: 'Continuously pull Toast, run OpenClaw, and refresh Backbone predictions.',
     handler: backboneListen,
   },
