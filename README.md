@@ -120,11 +120,11 @@ Action, gap, and trust reports include command-ready next steps where possible, 
 
 When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit>`. The command stores the recipe ingredient, backfills prior unresolved Toast sale documents into inventory consumption, and suppresses the related missing-recipe review task once the backlog has been made usable.
 
-`bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
+`bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, feedback band coverage, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
 
-`bbk backbone memory` shows what the model has learned from scored counts: SKU-level correction direction, bottle error, confidence adjustment, recent feedback, and current low-stock or cost risks that still lack calibration memory. Add `--env <name>` to inspect a sandbox.
+`bbk backbone memory` shows what the model has learned from scored counts: SKU-level correction direction, bottle error, confidence adjustment, whether actual counts landed inside the prediction band, recent feedback, and current low-stock or cost risks that still lack calibration memory. Add `--env <name>` to inspect a sandbox.
 
-`bbk backbone drift` is the learning health check. It reports feedback sample count, overall bottle error, directional bias in bottle units, feedback freshness, recent-vs-prior error movement, and the SKU drift watchlist. Add `--env <name>` for sandboxed simulations and tighten gates with `--max-bottle-mae`, `--max-bias-bottles`, or `--max-feedback-age-days`.
+`bbk backbone drift` is the learning health check. It reports feedback sample count, overall bottle error, directional bias in bottle units, feedback freshness, recent-vs-prior error movement, prediction-band coverage, and the SKU drift watchlist. Add `--env <name>` for sandboxed simulations and tighten gates with `--max-bottle-mae`, `--max-bias-bottles`, or `--max-feedback-age-days`.
 
 `bbk backbone explain` opens the evidence behind a prediction: projection method, count age, uncertainty band, stockout probability, vendor costs, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
 

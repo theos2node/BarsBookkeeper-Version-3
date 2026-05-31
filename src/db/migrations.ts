@@ -384,6 +384,16 @@ const migrations: Migration[] = [
       ALTER TABLE backbone_predictions ADD COLUMN stockout_probability REAL;
     `,
   },
+  {
+    id: 10,
+    name: 'backbone_feedback_uncertainty_coverage',
+    sql: `
+      ALTER TABLE backbone_feedback ADD COLUMN predicted_lower_on_hand REAL;
+      ALTER TABLE backbone_feedback ADD COLUMN predicted_upper_on_hand REAL;
+      ALTER TABLE backbone_feedback ADD COLUMN in_band INTEGER;
+      ALTER TABLE backbone_feedback ADD COLUMN stockout_probability REAL;
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

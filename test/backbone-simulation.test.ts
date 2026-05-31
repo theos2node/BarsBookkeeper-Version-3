@@ -31,6 +31,19 @@ describe('Backbone prediction model', () => {
     expect(result.calibratedSkus).toBeGreaterThanOrEqual(3)
     expect(result.predictions.some((prediction) => prediction.sku === 'Backbone Vodka 1L' && prediction.costSignal.includes('saves'))).toBe(true)
     expect(getLatestBackboneRun(db)?.predictionCount).toBeGreaterThanOrEqual(3)
+    const feedbackCoverage = db
+      .prepare(
+        `SELECT COUNT(*) AS samples,
+                SUM(CASE WHEN in_band = 1 THEN 1 ELSE 0 END) AS in_band,
+                SUM(CASE WHEN predicted_lower_on_hand IS NOT NULL AND predicted_upper_on_hand IS NOT NULL THEN 1 ELSE 0 END) AS with_band,
+                SUM(CASE WHEN stockout_probability IS NOT NULL THEN 1 ELSE 0 END) AS with_stockout
+         FROM backbone_feedback`,
+      )
+      .get() as any
+    expect(feedbackCoverage.samples).toBeGreaterThanOrEqual(3)
+    expect(feedbackCoverage.in_band).toBe(feedbackCoverage.samples)
+    expect(feedbackCoverage.with_band).toBe(feedbackCoverage.samples)
+    expect(feedbackCoverage.with_stockout).toBe(feedbackCoverage.samples)
     expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'count' AND external_id LIKE 'NOTE-%'").get()?.count).toBeGreaterThanOrEqual(6)
     expect(db.prepare("SELECT COUNT(*) AS count FROM sources WHERE name LIKE 'Backbone sparse % notes'").get()?.count).toBeGreaterThanOrEqual(2)
   })

@@ -84,6 +84,8 @@ type AccuracySummary = {
   maxBottleError: number
   meanAbsErrorQty: number
   biasQty: number
+  feedbackBandCoverage: number
+  outOfBandSamples: number
   latestFeedback: string
 }
 
@@ -97,6 +99,8 @@ type LearningDriftSummary = {
   recentBottleMae: number
   previousBottleMae: number
   trendDelta: number
+  feedbackBandCoverage: number
+  outOfBandSamples: number
   latestFeedback: string
   feedbackAgeDays: number | null
   thresholds: {
@@ -817,6 +821,11 @@ export const backboneAccuracy = async (args: string[], context: CommandContext):
       `bottle MAE: ${summary.bottleMae}`,
       summary.bottleMae <= 0.25 ? 'within target' : 'above 0.25 bottle target',
     )
+    context.terminal.status(
+      summary.feedbackBandCoverage >= 0.8 ? 'ok' : 'warn',
+      `feedback band coverage: ${summary.feedbackBandCoverage}`,
+      `${summary.outOfBandSamples} out-of-band sample${summary.outOfBandSamples === 1 ? '' : 's'}`,
+    )
 
     context.terminal.section('SKU accuracy')
     context.terminal.table(buildSkuAccuracyRows(db))
@@ -928,6 +937,11 @@ export const backboneDrift = async (args: string[], context: CommandContext): Pr
       summary.trendDelta <= 0.05 ? 'ok' : 'warn',
       `recent-vs-prior bottle MAE delta: ${summary.trendDelta}`,
       summary.previousBottleMae > 0 ? `recent ${summary.recentBottleMae}; prior ${summary.previousBottleMae}` : 'not enough prior samples for trend',
+    )
+    context.terminal.status(
+      summary.feedbackBandCoverage >= 0.8 ? 'ok' : 'warn',
+      `feedback band coverage: ${summary.feedbackBandCoverage}`,
+      `${summary.outOfBandSamples} out-of-band sample${summary.outOfBandSamples === 1 ? '' : 's'}`,
     )
 
     context.terminal.section('SKU drift watchlist')
@@ -1765,6 +1779,8 @@ const buildAccuracySummary = (db: Db, target: string): AccuracySummary => {
               MAX(bottle_error) AS max_bottle_error,
               AVG(absolute_error_quantity) AS mean_abs_error_qty,
               AVG(error_quantity) AS bias_qty,
+              AVG(CASE WHEN in_band IS NULL THEN NULL ELSE in_band END) AS feedback_band_coverage,
+              SUM(CASE WHEN in_band = 0 THEN 1 ELSE 0 END) AS out_of_band_samples,
               MAX(evaluated_at) AS latest_feedback
        FROM backbone_feedback`,
     )
@@ -1778,6 +1794,8 @@ const buildAccuracySummary = (db: Db, target: string): AccuracySummary => {
     maxBottleError: round(toNumber(row?.max_bottle_error), 4),
     meanAbsErrorQty: round(toNumber(row?.mean_abs_error_qty), 2),
     biasQty: round(toNumber(row?.bias_qty), 2),
+    feedbackBandCoverage: round(toNumber(row?.feedback_band_coverage), 3),
+    outOfBandSamples: toNumber(row?.out_of_band_samples),
     latestFeedback: row?.latest_feedback ? String(row.latest_feedback) : '',
   }
 }
@@ -1803,6 +1821,8 @@ const buildLearningDriftSummary = (
               COUNT(DISTINCT sku_id) AS calibrated_skus,
               AVG(bottle_error) AS bottle_mae,
               AVG(error_quantity / NULLIF(bottle_size, 0)) AS bias_bottles,
+              AVG(CASE WHEN in_band IS NULL THEN NULL ELSE in_band END) AS feedback_band_coverage,
+              SUM(CASE WHEN in_band = 0 THEN 1 ELSE 0 END) AS out_of_band_samples,
               MAX(evaluated_at) AS latest_feedback
        FROM feedback_with_bottles`,
     )
@@ -1841,12 +1861,15 @@ const buildLearningDriftSummary = (
   const trendDelta = previousBottleMae > 0 ? round(recentBottleMae - previousBottleMae, 4) : 0
   const bottleMae = round(toNumber(aggregate?.bottle_mae), 4)
   const biasBottles = round(toNumber(aggregate?.bias_bottles), 4)
+  const feedbackBandCoverage = round(toNumber(aggregate?.feedback_band_coverage), 3)
+  const outOfBandSamples = toNumber(aggregate?.out_of_band_samples)
   const warnings = [
     feedbackSamples < thresholds.minSamples ? 'sample floor not met' : '',
     bottleMae > thresholds.maxBottleMae ? 'overall bottle MAE above threshold' : '',
     Math.abs(biasBottles) > thresholds.maxBiasBottles ? 'directional bias above threshold' : '',
     feedbackAgeDays === null || feedbackAgeDays > thresholds.maxFeedbackAgeDays ? 'feedback is stale' : '',
     trendDelta > 0.05 ? 'recent error is worsening' : '',
+    feedbackSamples > 0 && feedbackBandCoverage < 0.8 ? 'prediction band coverage below target' : '',
   ].filter(Boolean)
 
   return {
@@ -1859,6 +1882,8 @@ const buildLearningDriftSummary = (
     recentBottleMae: round(recentBottleMae, 4),
     previousBottleMae: round(previousBottleMae, 4),
     trendDelta,
+    feedbackBandCoverage,
+    outOfBandSamples,
     latestFeedback,
     feedbackAgeDays,
     thresholds,
@@ -1885,6 +1910,8 @@ const buildLearningDriftRows = (db: Db, limit: number): Array<Record<string, unk
               AVG(f.bottle_error) AS bottle_mae,
               MAX(f.bottle_error) AS max_bottle_error,
               AVG(f.error_quantity / NULLIF(f.bottle_size, 0)) AS bias_bottles,
+              AVG(CASE WHEN f.in_band IS NULL THEN NULL ELSE f.in_band END) AS band_coverage,
+              SUM(CASE WHEN f.in_band = 0 THEN 1 ELSE 0 END) AS out_of_band,
               SUM(CASE WHEN f.error_quantity > 0 THEN 1 ELSE 0 END) AS predicted_too_low,
               SUM(CASE WHEN f.error_quantity < 0 THEN 1 ELSE 0 END) AS predicted_too_high,
               c.usage_adjustment_daily,
@@ -1908,6 +1935,8 @@ const buildLearningDriftRows = (db: Db, limit: number): Array<Record<string, unk
       maxBottleError: round(toNumber(row.max_bottle_error), 4),
       biasBottles: round(biasBottles, 4),
       direction: biasBottles > 0 ? 'predicted too low' : biasBottles < 0 ? 'predicted too high' : 'centered',
+      bandCoverage: round(toNumber(row.band_coverage), 3),
+      outOfBand: toNumber(row.out_of_band),
       tooLow: row.predicted_too_low,
       tooHigh: row.predicted_too_high,
       dailyAdjust: round(toNumber(row.usage_adjustment_daily), 4),
@@ -1925,9 +1954,10 @@ const buildSkuAccuracyRows = (db: Db): Array<Record<string, unknown>> => {
               AVG(f.bottle_error) AS bottle_mae,
               MAX(f.bottle_error) AS max_bottle_error,
               AVG(f.error_quantity) AS bias_qty,
+              AVG(CASE WHEN f.in_band IS NULL THEN NULL ELSE f.in_band END) AS band_coverage,
+              SUM(CASE WHEN f.in_band = 0 THEN 1 ELSE 0 END) AS out_of_band,
               c.usage_adjustment_daily,
-              c.confidence_adjustment,
-              MAX(f.evaluated_at) AS latest_feedback
+              c.confidence_adjustment
        FROM backbone_feedback f
        JOIN skus s ON s.id = f.sku_id
        LEFT JOIN backbone_calibrations c ON c.sku_id = f.sku_id
@@ -1939,12 +1969,13 @@ const buildSkuAccuracyRows = (db: Db): Array<Record<string, unknown>> => {
   return rows.map((row: any) => ({
     sku: row.sku,
     samples: row.samples,
-    bottleMae: round(toNumber(row.bottle_mae), 4),
-    maxBottleError: round(toNumber(row.max_bottle_error), 4),
-    bias: round(toNumber(row.bias_qty), 2),
-    dailyAdjust: round(toNumber(row.usage_adjustment_daily), 4),
-    confidenceAdjust: round(toNumber(row.confidence_adjustment), 3),
-    latest: row.latest_feedback ?? '',
+    mae: round(toNumber(row.bottle_mae), 4),
+    max: round(toNumber(row.max_bottle_error), 4),
+    biasQty: round(toNumber(row.bias_qty), 2),
+    bandCoverage: round(toNumber(row.band_coverage), 3),
+    out: toNumber(row.out_of_band),
+    daily: round(toNumber(row.usage_adjustment_daily), 4),
+    conf: round(toNumber(row.confidence_adjustment), 3),
   }))
 }
 
@@ -1953,9 +1984,12 @@ const buildRecentFeedbackRows = (db: Db, limit: number): Array<Record<string, un
     .prepare(
       `SELECT s.name AS sku,
               f.predicted_on_hand,
+              f.predicted_lower_on_hand,
+              f.predicted_upper_on_hand,
               f.actual_on_hand,
               f.error_quantity,
               f.bottle_error,
+              f.in_band,
               f.evaluated_at
        FROM backbone_feedback f
        JOIN skus s ON s.id = f.sku_id
@@ -1967,9 +2001,11 @@ const buildRecentFeedbackRows = (db: Db, limit: number): Array<Record<string, un
   return rows.map((row: any) => ({
     sku: row.sku,
     predicted: round(toNumber(row.predicted_on_hand), 2),
+    band: `${round(toNumber(row.predicted_lower_on_hand, row.predicted_on_hand), 2)}-${round(toNumber(row.predicted_upper_on_hand, row.predicted_on_hand), 2)}`,
     actual: round(toNumber(row.actual_on_hand), 2),
     error: round(toNumber(row.error_quantity), 2),
     bottleError: round(toNumber(row.bottle_error), 4),
+    inBand: toNumber(row.in_band) === 1,
     evaluated: row.evaluated_at ?? '',
   }))
 }

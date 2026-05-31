@@ -180,6 +180,9 @@ export const scoreBackboneFeedback = (db: Db, options: { asOf?: string } = {}): 
         `SELECT p.id AS prediction_id,
                 p.run_id,
                 p.predicted_on_hand,
+                p.predicted_lower_on_hand,
+                p.predicted_upper_on_hand,
+                p.stockout_probability,
                 r.as_of,
                 r.horizon_days
          FROM backbone_predictions p
@@ -199,15 +202,29 @@ export const scoreBackboneFeedback = (db: Db, options: { asOf?: string } = {}): 
     if (!prediction) continue
 
     const predictedOnHand = toNumber(prediction.predicted_on_hand)
+    const predictedLowerOnHand =
+      prediction.predicted_lower_on_hand === null || prediction.predicted_lower_on_hand === undefined
+        ? predictedOnHand
+        : toNumber(prediction.predicted_lower_on_hand)
+    const predictedUpperOnHand =
+      prediction.predicted_upper_on_hand === null || prediction.predicted_upper_on_hand === undefined
+        ? predictedOnHand
+        : toNumber(prediction.predicted_upper_on_hand)
     const actualOnHand = toNumber(count.actual_on_hand)
+    const inBand = actualOnHand >= predictedLowerOnHand && actualOnHand <= predictedUpperOnHand ? 1 : 0
+    const stockoutProbability =
+      prediction.stockout_probability === null || prediction.stockout_probability === undefined
+        ? null
+        : toNumber(prediction.stockout_probability)
     const error = round(actualOnHand - predictedOnHand, 3)
     const absoluteError = Math.abs(error)
     const bottleError = round(absoluteError / bottleSize(db, skuId), 4)
     const result = db.prepare(
       `INSERT OR IGNORE INTO backbone_feedback
        (prediction_id, run_id, sku_id, count_event_id, predicted_on_hand, actual_on_hand,
+        predicted_lower_on_hand, predicted_upper_on_hand, in_band, stockout_probability,
         error_quantity, absolute_error_quantity, bottle_error, evaluated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       toNumber(prediction.prediction_id),
       toNumber(prediction.run_id),
@@ -215,6 +232,10 @@ export const scoreBackboneFeedback = (db: Db, options: { asOf?: string } = {}): 
       countEventId,
       predictedOnHand,
       actualOnHand,
+      predictedLowerOnHand,
+      predictedUpperOnHand,
+      inBand,
+      stockoutProbability,
       error,
       absoluteError,
       bottleError,
