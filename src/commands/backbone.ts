@@ -44,6 +44,7 @@ type ParsedOptions = {
   cursorLookbackMinutes?: number
   toastMaxRetries?: number
   toastRetryDelayMs?: number
+  runVerify?: boolean
   minSamples?: number
   sku?: string
   olderThanDays?: number
@@ -188,6 +189,20 @@ type MaintenanceSummary = {
   }
   gaps: BackboneGapSummary
   nextActions: Array<Record<string, unknown>>
+  verification?: MaintenanceVerificationSummary
+}
+
+type MaintenanceVerificationSummary = {
+  enabled: boolean
+  status: 'passed' | 'failed'
+  scenarios: number
+  passed: number
+  failed: number
+  prefix: string
+  worstValidationBottleMae: number
+  worstRollingBottleMae: number
+  minRollingLowStockRecall: number
+  minRollingUncertaintyCoverage: number
 }
 
 type HorizonRun = {
@@ -201,6 +216,12 @@ type HorizonRun = {
     confidence: number
     costSignal: string
   }>
+}
+
+type VerificationScenarioResult = {
+  scenario: BackboneSimulationScenario
+  validation: { envName: string; envDbPath: string; result: ReturnType<typeof runBackboneAccuracySimulation> }
+  rolling: { envName: string; envDbPath: string; result: ReturnType<typeof runBackboneRollingBacktest> }
 }
 
 type EnvironmentPruneCandidate = {
@@ -499,6 +520,14 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
     },
   ])
 
+  const verification = options.runVerify
+    ? await runMaintenanceVerificationGate(context, {
+        startedAt,
+        label,
+        options,
+      })
+    : undefined
+
   const summary = await withBackendDb(context.config, async (db: any): Promise<MaintenanceSummary> => {
     const auditChecks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays })
     const auditFailures = auditChecks.filter((check) => check.status === 'fail')
@@ -521,6 +550,7 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
       },
       gaps,
       nextActions,
+      verification,
     }
 
     context.terminal.section('Audit gate')
@@ -534,7 +564,7 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
 
     persistMaintenanceRun(db, {
       startedAt,
-      status: auditFailures.length > 0 ? 'failed' : auditWarnings.length > 0 ? 'warn' : 'passed',
+      status: auditFailures.length > 0 || verification?.status === 'failed' ? 'failed' : auditWarnings.length > 0 ? 'warn' : 'passed',
       snapshot,
       auditFailures: auditFailures.length,
       auditWarnings: auditWarnings.length,
@@ -544,6 +574,9 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
 
     if (auditFailures.length > 0) {
       throw new Error(`backbone_maintenance_failed:${auditFailures.map((check) => check.check).join(',')}`)
+    }
+    if (verification?.status === 'failed') {
+      throw new Error('backbone_maintenance_verify_failed')
     }
     return maintenanceSummary
   })
@@ -591,6 +624,7 @@ export const backboneMaintainHistory = async (args: string[], context: CommandCo
           recipeCoverage: summary?.gaps.toastRecipeCoveragePct ?? '',
           staleCounts: summary?.gaps.staleCountSkus ?? '',
           missingCosts: summary?.gaps.missingVendorCostSkus ?? '',
+          verification: summary?.verification?.status ?? '',
           topAction: summary?.nextActions?.[0]?.action ?? '',
         }
       })
@@ -2701,6 +2735,86 @@ export const backboneBacktestMatrix = async (args: string[], context: CommandCon
   context.terminal.success(`Backbone rolling backtest matrix passed ${results.length}/${results.length} scenarios.`)
 }
 
+const runMaintenanceVerificationGate = async (
+  context: CommandContext,
+  input: {
+    startedAt: string
+    label: string
+    options: ParsedOptions
+  },
+): Promise<MaintenanceVerificationSummary> => {
+  const scenarios = input.options.scenario ? [input.options.scenario] : (['shrink'] satisfies BackboneSimulationScenario[])
+  const prefix = cleanEnvName(`${input.label}-verify`)
+  context.terminal.section('Verification gate')
+  context.terminal.subtitle(`isolated prefix: ${prefix}; scenarios: ${scenarios.join(', ')}`)
+
+  const results: VerificationScenarioResult[] = await Promise.all(
+    scenarios.map(async (scenario) => {
+      const validation = await runVerificationSandbox(context, {
+        envName: cleanEnvName(`${prefix}-validation-${scenario}`),
+        description: `Backbone maintenance ${scenario} validation-day sandbox`,
+        run: (db) =>
+          runBackboneAccuracySimulation(db, {
+            startAt: input.options.asOf,
+            trainingDays: input.options.trainingDays,
+            scenario,
+          }),
+      })
+      const rolling = await runVerificationSandbox(context, {
+        envName: cleanEnvName(`${prefix}-rolling-${scenario}`),
+        description: `Backbone maintenance ${scenario} rolling sandbox`,
+        run: (db) =>
+          runBackboneRollingBacktest(db, {
+            startAt: input.options.asOf,
+            days: input.options.days,
+            horizonDays: input.options.horizonDays,
+            countCadenceDays: input.options.countCadenceDays,
+            warmupDays: input.options.warmupDays,
+            scenario,
+          }),
+      })
+      return { scenario, validation, rolling }
+    }),
+  )
+
+  context.terminal.table(
+    results.map(({ scenario, validation, rolling }) => ({
+      scenario,
+      validation: validation.result.passed,
+      rolling: rolling.result.passed,
+      bottleMae: validation.result.bottleMae,
+      rollingMae: rolling.result.bottleMae,
+      lowStockRecall: rolling.result.lowStockRecall,
+      uncertaintyCoverage: rolling.result.uncertaintyCoverage,
+      costOptions: rolling.result.costCuttingOptions,
+      feedback: rolling.result.feedbackItems,
+    })),
+  )
+
+  const failed = results.filter(({ validation, rolling }) => !validation.result.passed || !rolling.result.passed)
+  const status = failed.length > 0 ? 'failed' : 'passed'
+  await persistVerificationResult(context, {
+    startedAt: input.startedAt,
+    status,
+    scenarios,
+    options: { ...input.options, env: prefix },
+    results,
+  })
+
+  return {
+    enabled: true,
+    status,
+    scenarios: results.length,
+    passed: results.length - failed.length,
+    failed: failed.length,
+    prefix,
+    worstValidationBottleMae: round(Math.max(0, ...results.map(({ validation }) => validation.result.bottleMae)), 3),
+    worstRollingBottleMae: round(Math.max(0, ...results.map(({ rolling }) => rolling.result.bottleMae)), 3),
+    minRollingLowStockRecall: round(Math.min(...results.map(({ rolling }) => rolling.result.lowStockRecall)), 3),
+    minRollingUncertaintyCoverage: round(Math.min(...results.map(({ rolling }) => rolling.result.uncertaintyCoverage)), 3),
+  }
+}
+
 export const backboneVerify = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
@@ -3095,11 +3209,7 @@ const persistVerificationResult = async (
     status: 'passed' | 'failed'
     scenarios: BackboneSimulationScenario[]
     options: ParsedOptions
-    results: Array<{
-      scenario: BackboneSimulationScenario
-      validation: { envName: string; envDbPath: string; result: ReturnType<typeof runBackboneAccuracySimulation> }
-      rolling: { envName: string; envDbPath: string; result: ReturnType<typeof runBackboneRollingBacktest> }
-    }>
+    results: VerificationScenarioResult[]
   },
 ): Promise<void> => {
   const failedScenarios = input.results.filter(({ validation, rolling }) => !validation.result.passed || !rolling.result.passed)
@@ -3771,6 +3881,8 @@ const parseOptions = (args: string[]): ParsedOptions => {
       parsed.skipOpenClaw = true
     } else if (arg === '--simulate-openclaw-failure') {
       parsed.simulateOpenClawFailure = true
+    } else if (arg === '--verify') {
+      parsed.runVerify = true
     } else if (arg === '--scenario' && next) {
       parsed.scenario = parseScenario(next)
       index += 1

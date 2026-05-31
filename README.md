@@ -57,6 +57,7 @@ npm run bbk -- backbone snapshot --label before-migration
 npm run bbk -- backbone snapshot-verify --label before-migration
 npm run bbk -- backbone snapshot-restore --label before-migration --env restore-check
 npm run bbk -- backbone maintain
+npm run bbk -- backbone maintain --verify --scenario shrink --days 60 --count-cadence-days 30
 npm run bbk -- backbone maintain-history
 npm run bbk -- backbone drift
 npm run bbk -- backbone gaps
@@ -155,7 +156,7 @@ Toast API pulls retry transient restaurant failures by default and keep any rest
 
 Use `bbk backbone snapshot --label <name>` before risky changes or as a scheduled maintenance step. It writes a consistent SQLite backup plus a JSON manifest under `data/backups/`, including row counts, latest Backbone run metrics, latest verification summary, and Toast cursor state. Use `bbk backbone snapshot-verify --label <name>` to run SQLite integrity checks and confirm the backup matches its manifest. Use `bbk backbone snapshot-restore --label <name> --env <environment>` to restore into an isolated environment for inspection without overwriting the base database.
 
-Use `bbk backbone maintain` for unattended health maintenance. It creates and verifies a SQLite snapshot, runs the operational audit, records prioritized data gaps, and persists the result in `backbone_maintenance_runs`; hard audit failures exit non-zero, while warnings and gaps are recorded for review. Use `bbk backbone maintain-history` to inspect recent maintenance runs after a LaunchAgent or terminal session finishes.
+Use `bbk backbone maintain` for unattended health maintenance. It creates and verifies a SQLite snapshot, runs the operational audit, records prioritized data gaps, and persists the result in `backbone_maintenance_runs`; hard audit failures exit non-zero, while warnings and gaps are recorded for review. Add `--verify` to run an isolated validation and rolling sparse-count verification during maintenance, persist the result in `backbone_verifications`, and store the verification summary alongside the maintenance action queue. Use `bbk backbone maintain-history` to inspect recent maintenance runs after a LaunchAgent or terminal session finishes.
 
 Use `bbk backbone audit` as an operational trust gate. It checks for a recent listener heartbeat, fresh prediction run, listener-to-prediction linkage, sparse count grounding, recent listener failures, prediction coverage, low-stock signals, cost signals, feedback calibration, learning drift, and Toast cursor state. Hard failures exit non-zero; missing count, cost, calibration, drift, or cursor signals are warnings so a quiet bar day does not block operations. Use `--max-age-minutes` for listener heartbeat freshness, `--max-run-age-minutes` when prediction freshness needs a different threshold, and `--max-count-age-days` for sparse bottle-count cadence.
 

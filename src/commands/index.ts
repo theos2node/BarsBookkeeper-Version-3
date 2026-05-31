@@ -111,7 +111,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'maintain'],
-    usage: 'bbk backbone maintain [--label <name>] [--limit <n>] [--max-age-minutes <minutes>] [--max-count-age-days <days>]',
+    usage: 'bbk backbone maintain [--label <name>] [--verify] [--scenario <name>] [--limit <n>] [--max-age-minutes <minutes>] [--max-count-age-days <days>]',
     summary: 'Run unattended Backbone maintenance: snapshot verification, audit checks, and data-gap persistence.',
     handler: backboneMaintain,
   },
