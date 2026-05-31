@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -96,6 +96,12 @@ export const createCommands = (
     usage: 'bbk backbone memory [--env <name>] [--limit <n>]',
     summary: 'Show learned Backbone calibration memory and ungrounded current risks.',
     handler: backboneMemory,
+  },
+  {
+    path: ['backbone', 'intake'],
+    usage: 'bbk backbone intake [--env <name>] [--limit <n>]',
+    summary: 'Show Toast recipe coverage and consumption entering Backbone learning.',
+    handler: backboneIntake,
   },
   {
     path: ['backbone', 'explain'],

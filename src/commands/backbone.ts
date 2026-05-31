@@ -77,6 +77,19 @@ type AccuracySummary = {
   latestFeedback: string
 }
 
+type ToastIntakeSummary = {
+  target: string
+  toastDocuments: number
+  mappedDocuments: number
+  missingRecipeDocuments: number
+  recipeCoveragePct: number
+  importedSaleEvents: number
+  consumedQuantity: number
+  openMissingRecipeReviews: number
+  latestToastDocument: string
+  latestSaleEvent: string
+}
+
 type HorizonRun = {
   horizonDays: number
   predictions: Array<{
@@ -426,6 +439,37 @@ export const backboneMemory = async (args: string[], context: CommandContext): P
   })
 }
 
+export const backboneIntake = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const limit = options.limit ?? 12
+  context.terminal.title('Backbone Toast intake')
+
+  await withBackboneTargetDb(context, options, (db, target) => {
+    const summary = buildToastIntakeSummary(db, target)
+    context.terminal.dump(summary)
+
+    if (summary.toastDocuments === 0) {
+      context.terminal.warn('No Toast sale documents have been ingested yet.')
+      context.terminal.subtitle('Run `bbk toast pull` or `bbk backbone listen --once`.')
+      return
+    }
+
+    context.terminal.status(
+      summary.recipeCoveragePct >= 95 ? 'ok' : 'warn',
+      `Toast recipe coverage: ${summary.recipeCoveragePct}%`,
+      summary.missingRecipeDocuments > 0
+        ? `${summary.missingRecipeDocuments} Toast item${summary.missingRecipeDocuments === 1 ? '' : 's'} still need recipe mapping`
+        : 'all ingested Toast sale documents produced consumption events',
+    )
+
+    context.terminal.section('Missing recipe backlog')
+    context.terminal.table(buildMissingRecipeRows(db, limit))
+
+    context.terminal.section('Recent mapped Toast consumption')
+    context.terminal.table(buildMappedToastRows(db, limit))
+  })
+}
+
 export const backboneExplain = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   context.terminal.title('Backbone explanation')
@@ -693,6 +737,144 @@ const buildRecentFeedbackRows = (db: Db, limit: number): Array<Record<string, un
     error: round(toNumber(row.error_quantity), 2),
     bottleError: round(toNumber(row.bottle_error), 4),
     evaluated: row.evaluated_at ?? '',
+  }))
+}
+
+const buildToastIntakeSummary = (db: Db, target: string): ToastIntakeSummary => {
+  const documents = db
+    .prepare(
+      `SELECT COUNT(*) AS toast_documents,
+              MAX(sd.document_date) AS latest_toast_document
+       FROM source_documents sd
+       JOIN sources s ON s.id = sd.source_id
+       WHERE s.kind = 'toast'
+         AND sd.document_type = 'toast_sale'`,
+    )
+    .get()
+  const mappedDocuments = toNumber(
+    db
+      .prepare(
+        `SELECT COUNT(DISTINCT source_document_id) AS count
+         FROM evidence_items
+         WHERE evidence_type = 'toast_sale'
+           AND source_document_id IS NOT NULL`,
+      )
+      .get()?.count,
+  )
+  const missingRecipeDocuments = toNumber(
+    db
+      .prepare(
+        `SELECT COUNT(DISTINCT source_document_id) AS count
+         FROM evidence_items
+         WHERE evidence_type = 'toast_missing_recipe'
+           AND source_document_id IS NOT NULL`,
+      )
+      .get()?.count,
+  )
+  const saleEvents = db
+    .prepare(
+      `SELECT COUNT(*) AS imported_sale_events,
+              COALESCE(SUM(ABS(e.quantity)), 0) AS consumed_quantity,
+              MAX(e.occurred_at) AS latest_sale_event
+       FROM inventory_events e
+       JOIN source_documents sd ON sd.id = e.source_document_id
+       JOIN sources s ON s.id = sd.source_id
+       WHERE s.kind = 'toast'
+         AND e.event_type = 'sale'`,
+    )
+    .get()
+  const openReviews = toNumber(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM evidence_items e
+         JOIN openclaw_decisions d ON d.id = e.decision_id
+         WHERE e.evidence_type = 'toast_missing_recipe'
+           AND d.state = 'needs_review'`,
+      )
+      .get()?.count,
+  )
+  const toastDocuments = toNumber(documents?.toast_documents)
+  return {
+    target,
+    toastDocuments,
+    mappedDocuments,
+    missingRecipeDocuments,
+    recipeCoveragePct: toastDocuments === 0 ? 100 : round((mappedDocuments / toastDocuments) * 100, 1),
+    importedSaleEvents: toNumber(saleEvents?.imported_sale_events),
+    consumedQuantity: round(toNumber(saleEvents?.consumed_quantity), 2),
+    openMissingRecipeReviews: openReviews,
+    latestToastDocument: documents?.latest_toast_document ? String(documents.latest_toast_document) : '',
+    latestSaleEvent: saleEvents?.latest_sale_event ? String(saleEvents.latest_sale_event) : '',
+  }
+}
+
+const buildMissingRecipeRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
+  const rows = db
+    .prepare(
+      `SELECT summary, payload_json, amount, occurred_at
+       FROM evidence_items
+       WHERE evidence_type = 'toast_missing_recipe'
+       ORDER BY occurred_at DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(Math.max(limit * 3, limit))
+  const grouped = new Map<string, { menuItem: string; sales: number; occurrences: number; latest: string; summary: string }>()
+
+  for (const row of rows as any[]) {
+    const payload = parseJson<Record<string, unknown>>(row.payload_json, {})
+    const menuItem = String(payload.menuItem ?? payload.menuItemName ?? payload.displayName ?? row.summary)
+    const existing = grouped.get(menuItem) ?? {
+      menuItem,
+      sales: 0,
+      occurrences: 0,
+      latest: '',
+      summary: String(row.summary),
+    }
+    existing.sales += toNumber(row.amount)
+    existing.occurrences += 1
+    existing.latest = existing.latest && existing.latest > String(row.occurred_at) ? existing.latest : String(row.occurred_at)
+    grouped.set(menuItem, existing)
+  }
+
+  return Array.from(grouped.values())
+    .sort((left, right) => right.occurrences - left.occurrences || right.sales - left.sales)
+    .slice(0, limit)
+    .map((row) => ({
+      menuItem: row.menuItem,
+      occurrences: row.occurrences,
+      sales: round(row.sales, 2),
+      latest: row.latest,
+      action: 'map recipe',
+    }))
+}
+
+const buildMappedToastRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
+  const rows = db
+    .prepare(
+      `SELECT e.occurred_at,
+              sku.name AS sku,
+              ABS(e.quantity) AS consumed,
+              e.unit,
+              ei.summary
+       FROM inventory_events e
+       JOIN skus sku ON sku.id = e.sku_id
+       LEFT JOIN evidence_items ei ON ei.id = e.evidence_item_id
+       JOIN source_documents sd ON sd.id = e.source_document_id
+       JOIN sources s ON s.id = sd.source_id
+       WHERE s.kind = 'toast'
+         AND e.event_type = 'sale'
+       ORDER BY e.occurred_at DESC, e.id DESC
+       LIMIT ?`,
+    )
+    .all(limit)
+
+  return rows.map((row: any) => ({
+    occurred: row.occurred_at,
+    sku: row.sku,
+    consumed: round(toNumber(row.consumed), 2),
+    unit: row.unit,
+    evidence: row.summary ?? '',
   }))
 }
 
@@ -1143,6 +1325,7 @@ const buildBackboneAudit = (
   const predictionCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_predictions').get()?.count)
   const feedbackCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback').get()?.count)
   const calibrationCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
+  const toastCoverage = buildToastIntakeSummary(db, 'base')
   const costSignals = toNumber(
     db
       .prepare(
@@ -1189,6 +1372,13 @@ const buildBackboneAudit = (
     check: 'prediction coverage',
     status: predictionCount > 0 ? 'pass' : 'fail',
     detail: `${predictionCount} stored prediction${predictionCount === 1 ? '' : 's'}`,
+  })
+  checks.push({
+    check: 'toast recipe coverage',
+    status: toastCoverage.toastDocuments === 0 || toastCoverage.recipeCoveragePct < 95 ? 'warn' : 'pass',
+    detail: toastCoverage.toastDocuments === 0
+      ? 'no Toast sale documents have been ingested'
+      : `${toastCoverage.mappedDocuments}/${toastCoverage.toastDocuments} Toast sale document${toastCoverage.toastDocuments === 1 ? '' : 's'} mapped into consumption (${toastCoverage.recipeCoveragePct}%); ${toastCoverage.missingRecipeDocuments} missing recipe${toastCoverage.missingRecipeDocuments === 1 ? '' : 's'}`,
   })
 
   const countEvents = toNumber(countGrounding?.count_events)
