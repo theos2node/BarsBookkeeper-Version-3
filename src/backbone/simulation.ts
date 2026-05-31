@@ -7,9 +7,15 @@ import { runBackboneModel, type BackbonePrediction, type BackboneRunResult } fro
 export type BackboneSimulationOptions = {
   startAt?: string
   trainingDays?: number
+  scenario?: BackboneSimulationScenario
 }
 
+export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow'
+
+export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow']
+
 export type BackboneSimulationResult = {
+  scenario: BackboneSimulationScenario
   run: BackboneRunResult
   actualAsOf: string
   trainingDays: number
@@ -29,7 +35,44 @@ export type BackboneSimulationResult = {
   }>
 }
 
+type ScenarioProfile = {
+  name: BackboneSimulationScenario
+  vodkaSales: number
+  margaritaSales: number
+  initial: {
+    vodka: number
+    tequila: number
+    tripleSec: number
+  }
+}
+
 const dayMs = 24 * 60 * 60 * 1000
+const recipe = {
+  vodkaSodaVodka: 50,
+  margaritaTequila: 60,
+  margaritaTripleSec: 20,
+}
+
+const profiles: Record<BackboneSimulationScenario, ScenarioProfile> = {
+  steady: {
+    name: 'steady',
+    vodkaSales: 8,
+    margaritaSales: 10,
+    initial: { vodka: 16000, tequila: 20000, tripleSec: 8000 },
+  },
+  busy: {
+    name: 'busy',
+    vodkaSales: 12,
+    margaritaSales: 14,
+    initial: { vodka: 24000, tequila: 28000, tripleSec: 11000 },
+  },
+  slow: {
+    name: 'slow',
+    vodkaSales: 4,
+    margaritaSales: 5,
+    initial: { vodka: 10000, tequila: 10000, tripleSec: 5000 },
+  },
+}
 
 const isoDay = (start: Date, day: number, hour: number): string => {
   const date = new Date(start.getTime() + day * dayMs)
@@ -48,12 +91,13 @@ export const runBackboneAccuracySimulation = (
 ): BackboneSimulationResult => {
   const start = new Date(options.startAt ?? '2026-05-01T08:00:00.000Z')
   const trainingDays = options.trainingDays ?? 29
+  const profile = profiles[options.scenario ?? 'steady']
   seedBackboneReference(db)
-  ingestInvoices(db, simulationInvoices(start), 'Backbone simulation invoices')
+  ingestInvoices(db, simulationInvoices(start, profile), 'Backbone simulation invoices')
 
   for (let day = 1; day <= trainingDays; day += 1) {
-    ingestToastSales(db, simulationSales(start, day), 'Backbone simulated Toast history')
-    if (day === 15) ingestCounts(db, midMonthCounts(start, day), 'Backbone sparse hand counts')
+    ingestToastSales(db, simulationSales(start, day, profile), 'Backbone simulated Toast history')
+    if (day === 15) ingestCounts(db, countSnapshot(start, day, profile, 'mid'), 'Backbone sparse hand counts')
   }
 
   const asOf = isoDay(start, trainingDays, 23)
@@ -65,8 +109,8 @@ export const runBackboneAccuracySimulation = (
   })
 
   const actualDay = trainingDays + 1
-  ingestToastSales(db, simulationSales(start, actualDay), 'Backbone simulated Toast validation')
-  ingestCounts(db, validationCounts(start, actualDay), 'Backbone sparse validation counts')
+  ingestToastSales(db, simulationSales(start, actualDay, profile), 'Backbone simulated Toast validation')
+  ingestCounts(db, countSnapshot(start, actualDay, profile, 'end'), 'Backbone sparse validation counts')
 
   const actualAsOf = isoDay(start, actualDay, 23)
   const actualBySku = new Map(getInventoryPositions(db, { asOf: actualAsOf, usageWindowDays: 28 }).map((position) => [position.skuId, position]))
@@ -99,6 +143,7 @@ export const runBackboneAccuracySimulation = (
   const passed = bottleMae <= 0.1 && maxBottleError <= 0.25 && lowStockRecall >= 1 && lowStockPrecision >= 0.75 && costCuttingOptions > 0
 
   return {
+    scenario: profile.name,
     run,
     actualAsOf,
     trainingDays,
@@ -132,27 +177,21 @@ const seedBackboneReference = (db: Db): void => {
   upsertRecipeItem(db, { menuItemId: margarita, skuId: tripleSec, quantity: 20, unit: 'ml' })
 }
 
-const simulationInvoices = (start: Date): InvoiceRow[] => [
-  { vendor: 'Premium Bottle House', invoiceNumber: 'BB-SIM-VODKA', invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Vodka 1L', quantity: 16000, unit: 'ml', unitCost: 0.05, category: 'liquor' },
-  { vendor: 'Value Spirits Co', invoiceNumber: 'BB-SIM-TEQUILA', invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Tequila 1L', quantity: 20000, unit: 'ml', unitCost: 0.032, category: 'liquor' },
-  { vendor: 'Value Spirits Co', invoiceNumber: 'BB-SIM-TRIPLE', invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Triple Sec 1L', quantity: 8000, unit: 'ml', unitCost: 0.016, category: 'liquor' },
+const simulationInvoices = (start: Date, profile: ScenarioProfile): InvoiceRow[] => [
+  { vendor: 'Premium Bottle House', invoiceNumber: `BB-SIM-${profile.name}-VODKA`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Vodka 1L', quantity: profile.initial.vodka, unit: 'ml', unitCost: 0.05, category: 'liquor' },
+  { vendor: 'Value Spirits Co', invoiceNumber: `BB-SIM-${profile.name}-TEQUILA`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Tequila 1L', quantity: profile.initial.tequila, unit: 'ml', unitCost: 0.032, category: 'liquor' },
+  { vendor: 'Value Spirits Co', invoiceNumber: `BB-SIM-${profile.name}-TRIPLE`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Triple Sec 1L', quantity: profile.initial.tripleSec, unit: 'ml', unitCost: 0.016, category: 'liquor' },
 ]
 
-const simulationSales = (start: Date, day: number): ToastSalesRow[] => [
-  { externalId: `BB-SIM-VODKA-${day}`, occurredAt: isoDay(start, day, 21), menuItem: 'Backbone Vodka Soda', quantitySold: 8 },
-  { externalId: `BB-SIM-MARG-${day}`, occurredAt: isoDay(start, day, 21), menuItem: 'Backbone Margarita', quantitySold: 10 },
+const simulationSales = (start: Date, day: number, profile: ScenarioProfile): ToastSalesRow[] => [
+  { externalId: `BB-SIM-${profile.name}-VODKA-${day}`, occurredAt: isoDay(start, day, 21), menuItem: 'Backbone Vodka Soda', quantitySold: profile.vodkaSales },
+  { externalId: `BB-SIM-${profile.name}-MARG-${day}`, occurredAt: isoDay(start, day, 21), menuItem: 'Backbone Margarita', quantitySold: profile.margaritaSales },
 ]
 
-const midMonthCounts = (start: Date, day: number): CountRow[] => [
-  { countId: 'BB-SIM-MID-VODKA', occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: 10000, unit: 'ml' },
-  { countId: 'BB-SIM-MID-TEQUILA', occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: 11000, unit: 'ml' },
-  { countId: 'BB-SIM-MID-TRIPLE', occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: 5000, unit: 'ml' },
-]
-
-const validationCounts = (start: Date, day: number): CountRow[] => [
-  { countId: 'BB-SIM-END-VODKA', occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: 4000, unit: 'ml' },
-  { countId: 'BB-SIM-END-TEQUILA', occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: 2000, unit: 'ml' },
-  { countId: 'BB-SIM-END-TRIPLE', occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: 2000, unit: 'ml' },
+const countSnapshot = (start: Date, day: number, profile: ScenarioProfile, label: 'mid' | 'end'): CountRow[] => [
+  { countId: `BB-SIM-${profile.name}-${label}-VODKA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: profile.initial.vodka - profile.vodkaSales * recipe.vodkaSodaVodka * day, unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-TEQUILA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: profile.initial.tequila - profile.margaritaSales * recipe.margaritaTequila * day, unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-TRIPLE`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: profile.initial.tripleSec - profile.margaritaSales * recipe.margaritaTripleSec * day, unit: 'ml' },
 ]
 
 const bottleSize = (db: Db, skuId: number): number => {

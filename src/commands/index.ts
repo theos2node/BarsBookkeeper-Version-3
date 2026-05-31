@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneListen, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneListen, backboneMatrix, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -81,9 +81,15 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'simulate'],
-    usage: 'bbk backbone simulate [--env <name>] [--days <days>]',
+    usage: 'bbk backbone simulate [--env <name>] [--days <days>] [--scenario steady|busy|slow]',
     summary: 'Create an isolated sandbox and test Backbone prediction accuracy.',
     handler: backboneSimulate,
+  },
+  {
+    path: ['backbone', 'matrix'],
+    usage: 'bbk backbone matrix [--env <prefix>] [--days <days>]',
+    summary: 'Run multiple isolated Backbone simulation scenarios in parallel.',
+    handler: backboneMatrix,
   },
   {
     path: ['forecast', 'run'],

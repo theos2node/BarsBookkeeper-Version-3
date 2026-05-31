@@ -47,6 +47,7 @@ npm run bbk -- backbone run
 npm run bbk -- backbone listen
 npm run bbk -- backbone status
 npm run bbk -- backbone simulate --env test-lab --days 30
+npm run bbk -- backbone matrix --env test-matrix --days 30
 npm run bbk -- review
 npm run bbk -- review dismiss <decision-id> "reason"
 npm run bbk -- review apply <decision-id>
@@ -74,9 +75,11 @@ For destructive or time-warped testing, use isolated environments. Each simulati
 
 ```sh
 npm run bbk -- backbone simulate --env month-end-wrap --days 30
+npm run bbk -- backbone simulate --env busy-month --scenario busy --days 30
+npm run bbk -- backbone matrix --env month-end-matrix --days 30
 ```
 
-The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, and a validation day. It passes only when bottle-count error, low-stock detection, and cost-cutting detection all clear deterministic thresholds.
+The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, and a validation day. It passes only when bottle-count error, low-stock detection, and cost-cutting detection all clear deterministic thresholds. The matrix command runs the steady, busy, and slow scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database.
 
 ## Terminal Console
 

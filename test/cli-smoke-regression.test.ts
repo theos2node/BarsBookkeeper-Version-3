@@ -112,6 +112,7 @@ process.exit(1)
       dataDir,
     )
     const backboneSimulation = await expectCliOk(['backbone', 'simulate', '--env', 'smoke', '--days', '30'], dataDir)
+    const backboneMatrix = await expectCliOk(['backbone', 'matrix', '--env', 'smoke-matrix', '--days', '30'], dataDir)
     await expectCliOk(['forecast', 'run'], dataDir)
     await expectCliOk(['orders', 'generate'], dataDir)
     const consoleOutput = await expectCliOk(['console'], dataDir)
@@ -123,6 +124,7 @@ process.exit(1)
     expect(listenOutput).toContain('file:')
     expect(backboneSimulation).toContain('bottleMae')
     expect(backboneSimulation).toContain('lowStockRecall')
+    expect(backboneMatrix).toContain('Backbone scenario matrix passed 3/3 scenarios')
 
     db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
     const baseline = {

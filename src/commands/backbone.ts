@@ -3,7 +3,11 @@ import { resolve } from 'node:path'
 import { openDatabase, toNumber } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
 import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel } from '../backbone/index.js'
-import { runBackboneAccuracySimulation } from '../backbone/simulation.js'
+import {
+  backboneSimulationScenarios,
+  runBackboneAccuracySimulation,
+  type BackboneSimulationScenario,
+} from '../backbone/simulation.js'
 import { runOpenClawBrain } from '../brain/openclaw.js'
 import { pullToast } from '../ingest/toast.js'
 import { withBackendDb } from './backend.js'
@@ -21,6 +25,7 @@ type ParsedOptions = {
   toastStart?: string
   toastEnd?: string
   skipToast?: boolean
+  scenario?: BackboneSimulationScenario
 }
 
 export const backboneRun = async (args: string[], context: CommandContext): Promise<void> => {
@@ -112,7 +117,7 @@ export const backboneListen = async (args: string[], context: CommandContext): P
 
 export const backboneSimulate = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
-  const envName = options.env ?? `sim-${new Date().toISOString().replace(/[:.]/g, '-')}`
+  const envName = options.env ?? `sim-${options.scenario ?? 'steady'}-${new Date().toISOString().replace(/[:.]/g, '-')}`
   const envDir = resolve(context.config.dataDir, 'environments', envName)
   const envDbPath = resolve(envDir, 'barsbookkeeper.sqlite')
 
@@ -133,6 +138,7 @@ export const backboneSimulate = async (args: string[], context: CommandContext):
     const result = runBackboneAccuracySimulation(db, {
       startAt: options.asOf,
       trainingDays: options.trainingDays,
+      scenario: options.scenario,
     })
     context.terminal.status(result.passed ? 'ok' : 'fail', `Simulation ${envName} ${result.passed ? 'passed' : 'failed'}`)
     context.terminal.subtitle(`sandbox db: ${envDbPath}`)
@@ -154,6 +160,62 @@ export const backboneSimulate = async (args: string[], context: CommandContext):
   } finally {
     db.close()
   }
+}
+
+export const backboneMatrix = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
+  const prefix = options.env ?? `matrix-${new Date().toISOString().replace(/[:.]/g, '-')}`
+
+  context.terminal.title('Backbone scenario matrix')
+  context.terminal.subtitle(`scenarios: ${scenarios.join(', ')}`)
+
+  const results = await Promise.all(
+    scenarios.map(async (scenario) => {
+      const envName = cleanEnvName(`${prefix}-${scenario}`)
+      const envDir = resolve(context.config.dataDir, 'environments', envName)
+      const envDbPath = resolve(envDir, 'barsbookkeeper.sqlite')
+      await mkdir(envDir, { recursive: true })
+
+      await withBackendDb(context.config, async (controlDb: any) => {
+        ensureBackboneEnvironment(controlDb, {
+          name: envName,
+          dbPath: envDbPath,
+          description: `Backbone ${scenario} scenario matrix sandbox`,
+        })
+      })
+
+      const db = openDatabase(envDbPath)
+      try {
+        migrateDatabase(db)
+        const result = runBackboneAccuracySimulation(db, {
+          startAt: options.asOf,
+          trainingDays: options.trainingDays,
+          scenario,
+        })
+        return { envName, envDbPath, result }
+      } finally {
+        db.close()
+      }
+    }),
+  )
+
+  context.terminal.table(
+    results.map(({ envName, result }) => ({
+      env: envName,
+      scenario: result.scenario,
+      passed: result.passed,
+      bottleMae: result.bottleMae,
+      maxBottleError: result.maxBottleError,
+      lowStockRecall: result.lowStockRecall,
+      lowStockPrecision: result.lowStockPrecision,
+      costOptions: result.costCuttingOptions,
+    })),
+  )
+
+  const failed = results.filter(({ result }) => !result.passed)
+  if (failed.length > 0) throw new Error(`backbone_matrix_failed:${failed.map(({ result }) => result.scenario).join(',')}`)
+  context.terminal.success(`Backbone scenario matrix passed ${results.length}/${results.length} scenarios.`)
 }
 
 const tryPullToast = async (
@@ -270,6 +332,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--skip-toast' || arg === '--no-toast') {
       parsed.skipToast = true
+    } else if (arg === '--scenario' && next) {
+      parsed.scenario = parseScenario(next)
+      index += 1
     }
   }
   return parsed
@@ -291,6 +356,13 @@ const cleanEnvName = (value: string): string => {
   const clean = value.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80)
   if (!clean) throw new Error('environment_name_required')
   return clean
+}
+
+const parseScenario = (value: string): BackboneSimulationScenario => {
+  if (backboneSimulationScenarios.includes(value as BackboneSimulationScenario)) {
+    return value as BackboneSimulationScenario
+  }
+  throw new Error(`unknown_backbone_scenario:${value}`)
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
