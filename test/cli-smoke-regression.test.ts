@@ -116,6 +116,7 @@ process.exit(1)
     await expectCliOk(['forecast', 'run'], dataDir)
     await expectCliOk(['orders', 'generate'], dataDir)
     const consoleOutput = await expectCliOk(['console'], dataDir)
+    const backboneStatus = await expectCliOk(['backbone', 'status'], dataDir)
 
     expect(consoleOutput).toContain('Snapshot')
     expect(consoleOutput).toContain('Inventory')
@@ -125,6 +126,7 @@ process.exit(1)
     expect(backboneSimulation).toContain('bottleMae')
     expect(backboneSimulation).toContain('lowStockRecall')
     expect(backboneMatrix).toContain('Backbone scenario matrix passed 3/3 scenarios')
+    expect(backboneStatus).toContain('Listener health')
 
     db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
     const baseline = {
@@ -144,6 +146,8 @@ process.exit(1)
     expect(
       scalar(db, "SELECT COUNT(*) AS value FROM evidence_items WHERE evidence_type = 'toast_missing_recipe'"),
     ).toBe(1)
+    expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_listener_cycles')).toBe(2)
+    expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'completed'")).toBe(2)
 
     await expectCliOk(['setup'], dataDir)
     await expectCliOk(['seed-demo'], dataDir)

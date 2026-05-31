@@ -275,6 +275,33 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_backbone_feedback_run ON backbone_feedback(run_id);
     `,
   },
+  {
+    id: 4,
+    name: 'backbone_listener_health',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_listener_cycles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        toast_ok INTEGER NOT NULL DEFAULT 0,
+        toast_summary TEXT NOT NULL DEFAULT '',
+        toast_error TEXT,
+        review_items INTEGER NOT NULL DEFAULT 0,
+        backbone_run_id INTEGER REFERENCES backbone_runs(id),
+        prediction_count INTEGER NOT NULL DEFAULT 0,
+        low_stock_count INTEGER NOT NULL DEFAULT 0,
+        feedback_items INTEGER NOT NULL DEFAULT 0,
+        calibrated_skus INTEGER NOT NULL DEFAULT 0,
+        cost_cutting_options INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_listener_cycles_started ON backbone_listener_cycles(started_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_listener_cycles_status ON backbone_listener_cycles(status);
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

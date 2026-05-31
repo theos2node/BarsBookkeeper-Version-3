@@ -53,6 +53,7 @@ export const backboneStatus = async (_args: string[], context: CommandContext): 
       return
     }
     renderRun(result, context)
+    renderListenerHealth(db, context)
   })
 }
 
@@ -82,29 +83,51 @@ export const backboneListen = async (args: string[], context: CommandContext): P
     while (!stopped && completed < cycles) {
       completed += 1
       const cycleStarted = new Date().toISOString()
+      const cycleId = startListenerCycle(db, cycleStarted)
       const toast = await tryPullToast(db, context, options)
-      const openClaw = await runOpenClawBrain(db, context.config)
-      const backbone = runBackboneModel(db, {
-        asOf: options.asOf,
-        horizonDays: options.horizonDays,
-        usageWindowDays: options.usageWindowDays,
-        mode: 'live',
-      })
-
-      context.terminal.table([
-        {
-          cycle: completed,
-          started: cycleStarted,
-          toast: toast.summary,
+      try {
+        const openClaw = await runOpenClawBrain(db, context.config)
+        const backbone = runBackboneModel(db, {
+          asOf: options.asOf,
+          horizonDays: options.horizonDays,
+          usageWindowDays: options.usageWindowDays,
+          mode: 'live',
+        })
+        finishListenerCycle(db, cycleId, {
+          status: 'completed',
+          toast,
           reviewItems: openClaw.reviewItems,
-          runId: backbone.runId,
-          predictions: backbone.predictionCount,
-          lowStock: backbone.lowStockCount,
-          feedback: backbone.feedbackItems,
-          calibrated: backbone.calibratedSkus,
-          costOptions: backbone.costCuttingOptions,
-        },
-      ])
+          backboneRunId: backbone.runId,
+          predictionCount: backbone.predictionCount,
+          lowStockCount: backbone.lowStockCount,
+          feedbackItems: backbone.feedbackItems,
+          calibratedSkus: backbone.calibratedSkus,
+          costCuttingOptions: backbone.costCuttingOptions,
+        })
+
+        context.terminal.table([
+          {
+            cycle: completed,
+            journal: cycleId,
+            started: cycleStarted,
+            toast: toast.summary,
+            reviewItems: openClaw.reviewItems,
+            runId: backbone.runId,
+            predictions: backbone.predictionCount,
+            lowStock: backbone.lowStockCount,
+            feedback: backbone.feedbackItems,
+            calibrated: backbone.calibratedSkus,
+            costOptions: backbone.costCuttingOptions,
+          },
+        ])
+      } catch (error) {
+        finishListenerCycle(db, cycleId, {
+          status: 'failed',
+          toast,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        })
+        throw error
+      }
 
       if (stopped || completed >= cycles) break
       await sleep(intervalMs)
@@ -228,7 +251,7 @@ const tryPullToast = async (
   db: any,
   context: CommandContext,
   options: ParsedOptions,
-): Promise<{ ok: boolean; summary: string }> => {
+): Promise<{ ok: boolean; summary: string; error?: string }> => {
   if (options.skipToast) return { ok: true, summary: 'skipped' }
 
   const toastArgs: string[] = []
@@ -245,8 +268,107 @@ const tryPullToast = async (
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     context.terminal.warn(`Toast pull skipped this cycle: ${message}`)
-    return { ok: false, summary: `error:${message}` }
+    return { ok: false, summary: `error:${message}`, error: message }
   }
+}
+
+const startListenerCycle = (db: any, startedAt: string): number =>
+  toNumber(
+    db
+      .prepare(
+        `INSERT INTO backbone_listener_cycles (started_at, status)
+         VALUES (?, 'running')`,
+      )
+      .run(startedAt).lastInsertRowid,
+  )
+
+const finishListenerCycle = (
+  db: any,
+  cycleId: number,
+  input: {
+    status: 'completed' | 'failed'
+    toast: { ok: boolean; summary: string; error?: string }
+    reviewItems?: number
+    backboneRunId?: number
+    predictionCount?: number
+    lowStockCount?: number
+    feedbackItems?: number
+    calibratedSkus?: number
+    costCuttingOptions?: number
+    errorMessage?: string
+  },
+): void => {
+  db.prepare(
+    `UPDATE backbone_listener_cycles
+     SET completed_at = CURRENT_TIMESTAMP,
+         status = ?,
+         toast_ok = ?,
+         toast_summary = ?,
+         toast_error = ?,
+         review_items = ?,
+         backbone_run_id = ?,
+         prediction_count = ?,
+         low_stock_count = ?,
+         feedback_items = ?,
+         calibrated_skus = ?,
+         cost_cutting_options = ?,
+         error_message = ?
+     WHERE id = ?`,
+  ).run(
+    input.status,
+    input.toast.ok ? 1 : 0,
+    input.toast.summary,
+    input.toast.error ?? null,
+    input.reviewItems ?? 0,
+    input.backboneRunId ?? null,
+    input.predictionCount ?? 0,
+    input.lowStockCount ?? 0,
+    input.feedbackItems ?? 0,
+    input.calibratedSkus ?? 0,
+    input.costCuttingOptions ?? 0,
+    input.errorMessage ?? null,
+    cycleId,
+  )
+}
+
+const renderListenerHealth = (db: any, context: CommandContext): void => {
+  const rows = db
+    .prepare(
+      `SELECT id,
+              started_at,
+              status,
+              toast_ok,
+              toast_summary,
+              review_items,
+              backbone_run_id,
+              prediction_count,
+              low_stock_count,
+              feedback_items,
+              calibrated_skus,
+              cost_cutting_options,
+              error_message
+       FROM backbone_listener_cycles
+       ORDER BY id DESC
+       LIMIT 5`,
+    )
+    .all()
+  if (rows.length === 0) return
+
+  context.terminal.section('Listener health')
+  context.terminal.table(
+    rows.map((row: any) => ({
+      id: row.id,
+      status: row.status,
+      started: row.started_at,
+      toast: row.toast_ok ? row.toast_summary : `warn:${row.toast_summary}`,
+      run: row.backbone_run_id ?? '',
+      predictions: row.prediction_count,
+      lowStock: row.low_stock_count,
+      feedback: row.feedback_items,
+      calibrated: row.calibrated_skus,
+      error: row.error_message ?? '',
+    })),
+  )
 }
 
 const renderRun = (

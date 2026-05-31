@@ -71,6 +71,8 @@ npm run bbk -- backbone listen --cycles 3 --interval-ms 1000
 npm run bbk -- backbone listen --toast-file ./samples/toast-orders.json --cycles 1
 ```
 
+Every listener cycle is written to `backbone_listener_cycles`, including Toast status, OpenClaw review count, Backbone run ID, prediction count, low-stock count, feedback count, and any failure message. `bbk backbone status` includes the latest listener health rows so restart/debug state is available from the terminal.
+
 For destructive or time-warped testing, use isolated environments. Each simulation gets its own database under `data/environments/<name>/`, so multiple tests can run without touching the base product database.
 
 ```sh
