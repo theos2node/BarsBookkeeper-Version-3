@@ -10,9 +10,9 @@ export type BackboneSimulationOptions = {
   scenario?: BackboneSimulationScenario
 }
 
-export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow' | 'shrink'
+export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow' | 'shrink' | 'volatile'
 
-export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow', 'shrink']
+export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow', 'shrink', 'volatile']
 
 export type BackboneSimulationResult = {
   scenario: BackboneSimulationScenario
@@ -51,6 +51,7 @@ type ScenarioProfile = {
     tequila?: number
     tripleSec?: number
   }
+  weekdayMultipliers?: Record<number, number>
 }
 
 const dayMs = 24 * 60 * 60 * 1000
@@ -86,6 +87,21 @@ const profiles: Record<BackboneSimulationScenario, ScenarioProfile> = {
     initial: { vodka: 16000, tequila: 20000, tripleSec: 8000 },
     hiddenShrinkDaily: { tequila: 120, tripleSec: 60 },
   },
+  volatile: {
+    name: 'volatile',
+    vodkaSales: 7,
+    margaritaSales: 9,
+    initial: { vodka: 18000, tequila: 22000, tripleSec: 9000 },
+    weekdayMultipliers: {
+      0: 2.1,
+      1: 0.45,
+      2: 0.5,
+      3: 0.7,
+      4: 0.9,
+      5: 1.75,
+      6: 2,
+    },
+  },
 }
 
 const isoDay = (start: Date, day: number, hour: number): string => {
@@ -98,6 +114,31 @@ const round = (value: number, decimals = 3): number => Number(value.toFixed(deci
 
 const highRisk = (prediction: BackbonePrediction): boolean =>
   prediction.lowStockRisk !== 'ok'
+
+const salesForDay = (start: Date, day: number, profile: ScenarioProfile): { vodkaSales: number; margaritaSales: number } => {
+  const weekday = new Date(start.getTime() + day * dayMs).getUTCDay()
+  const multiplier = profile.weekdayMultipliers?.[weekday] ?? 1
+  return {
+    vodkaSales: Math.round(profile.vodkaSales * multiplier),
+    margaritaSales: Math.round(profile.margaritaSales * multiplier),
+  }
+}
+
+const cumulativeConsumption = (
+  start: Date,
+  throughDay: number,
+  profile: ScenarioProfile,
+  sku: 'vodka' | 'tequila' | 'tripleSec',
+): number => {
+  let consumed = 0
+  for (let day = 1; day <= throughDay; day += 1) {
+    const sales = salesForDay(start, day, profile)
+    if (sku === 'vodka') consumed += sales.vodkaSales * recipe.vodkaSodaVodka
+    if (sku === 'tequila') consumed += sales.margaritaSales * recipe.margaritaTequila
+    if (sku === 'tripleSec') consumed += sales.margaritaSales * recipe.margaritaTripleSec
+  }
+  return consumed
+}
 
 export const runBackboneAccuracySimulation = (
   db: Db,
@@ -202,15 +243,18 @@ const simulationInvoices = (start: Date, profile: ScenarioProfile): InvoiceRow[]
   { vendor: 'Value Spirits Co', invoiceNumber: `BB-SIM-${profile.name}-TRIPLE`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Triple Sec 1L', quantity: profile.initial.tripleSec, unit: 'ml', unitCost: 0.016, category: 'liquor' },
 ]
 
-const simulationSales = (start: Date, day: number, profile: ScenarioProfile): ToastSalesRow[] => [
-  { externalId: `BB-SIM-${profile.name}-VODKA-${day}`, occurredAt: isoDay(start, day, 21), menuItem: 'Backbone Vodka Soda', quantitySold: profile.vodkaSales },
-  { externalId: `BB-SIM-${profile.name}-MARG-${day}`, occurredAt: isoDay(start, day, 21), menuItem: 'Backbone Margarita', quantitySold: profile.margaritaSales },
-]
+const simulationSales = (start: Date, day: number, profile: ScenarioProfile): ToastSalesRow[] => {
+  const sales = salesForDay(start, day, profile)
+  return [
+    { externalId: `BB-SIM-${profile.name}-VODKA-${day}`, occurredAt: isoDay(start, day, 21), menuItem: 'Backbone Vodka Soda', quantitySold: sales.vodkaSales },
+    { externalId: `BB-SIM-${profile.name}-MARG-${day}`, occurredAt: isoDay(start, day, 21), menuItem: 'Backbone Margarita', quantitySold: sales.margaritaSales },
+  ]
+}
 
 const countSnapshot = (start: Date, day: number, profile: ScenarioProfile, label: 'mid' | 'end'): CountRow[] => [
-  { countId: `BB-SIM-${profile.name}-${label}-VODKA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: profile.initial.vodka - profile.vodkaSales * recipe.vodkaSodaVodka * day - hiddenShrink(profile, 'vodka', day), unit: 'ml' },
-  { countId: `BB-SIM-${profile.name}-${label}-TEQUILA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: profile.initial.tequila - profile.margaritaSales * recipe.margaritaTequila * day - hiddenShrink(profile, 'tequila', day), unit: 'ml' },
-  { countId: `BB-SIM-${profile.name}-${label}-TRIPLE`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: profile.initial.tripleSec - profile.margaritaSales * recipe.margaritaTripleSec * day - hiddenShrink(profile, 'tripleSec', day), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-VODKA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: profile.initial.vodka - cumulativeConsumption(start, day, profile, 'vodka') - hiddenShrink(profile, 'vodka', day), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-TEQUILA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: profile.initial.tequila - cumulativeConsumption(start, day, profile, 'tequila') - hiddenShrink(profile, 'tequila', day), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-TRIPLE`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: profile.initial.tripleSec - cumulativeConsumption(start, day, profile, 'tripleSec') - hiddenShrink(profile, 'tripleSec', day), unit: 'ml' },
 ]
 
 const hiddenShrink = (profile: ScenarioProfile, sku: keyof NonNullable<ScenarioProfile['hiddenShrinkDaily']>, day: number): number =>

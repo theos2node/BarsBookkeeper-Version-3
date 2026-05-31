@@ -48,6 +48,24 @@ describe('Backbone prediction model', () => {
     }
   })
 
+  it('uses weekday demand shape to stay accurate during volatile Toast patterns', () => {
+    const result = runBackboneAccuracySimulation(db, { scenario: 'volatile' })
+    const projectionMethods = db
+      .prepare(
+        `SELECT evidence_json
+         FROM backbone_predictions
+         WHERE run_id = ?`,
+      )
+      .all(result.run.runId)
+      .map((row: any) => JSON.parse(String(row.evidence_json)).projectionMethod)
+
+    expect(result.passed).toBe(true)
+    expect(result.bottleMae).toBeLessThanOrEqual(0.1)
+    expect(result.maxBottleError).toBeLessThanOrEqual(0.25)
+    expect(result.lowStockRecall).toBe(1)
+    expect(projectionMethods).toContain('weekday')
+  })
+
   it('flags hidden shrink from sparse counts as an audit cost signal', () => {
     const result = runBackboneAccuracySimulation(db, { scenario: 'shrink' })
 

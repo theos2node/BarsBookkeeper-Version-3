@@ -312,6 +312,62 @@ const shrinkRate = (db: Db, skuId: number, asOf: string, windowDays: number): nu
   return toNumber(row?.shrink) / Math.max(1, windowDays)
 }
 
+const weekdayUsageAverages = (db: Db, skuId: number, asOf: string, windowDays: number): Map<number, number> => {
+  const start = new Date(new Date(asOf).getTime() - windowDays * 24 * 60 * 60 * 1000).toISOString()
+  const rows = db
+    .prepare(
+      `WITH daily AS (
+         SELECT CAST(strftime('%w', occurred_at) AS INTEGER) AS weekday,
+                substr(occurred_at, 1, 10) AS day,
+                SUM(ABS(quantity)) AS used
+         FROM inventory_events
+         WHERE sku_id = ?
+           AND event_type = 'sale'
+           AND quantity < 0
+           AND occurred_at >= ?
+           AND occurred_at <= ?
+         GROUP BY weekday, day
+       )
+       SELECT weekday, AVG(used) AS avg_used
+       FROM daily
+       GROUP BY weekday`,
+    )
+    .all(skuId, start, asOf)
+
+  return new Map(rows.map((row) => [toNumber(row.weekday), toNumber(row.avg_used)]))
+}
+
+const projectedUsageForHorizon = (input: {
+  db: Db
+  skuId: number
+  asOf: string
+  horizonDays: number
+  usageWindowDays: number
+  fallbackDailyUsage: number
+}): { totalUsage: number; dailyUsage: number; method: 'weekday' | 'average' } => {
+  const weekdayAverages = weekdayUsageAverages(input.db, input.skuId, input.asOf, input.usageWindowDays)
+  if (weekdayAverages.size === 0) {
+    return {
+      totalUsage: input.fallbackDailyUsage * input.horizonDays,
+      dailyUsage: input.fallbackDailyUsage,
+      method: 'average',
+    }
+  }
+
+  let totalUsage = 0
+  const cursor = new Date(input.asOf)
+  for (let day = 1; day <= input.horizonDays; day += 1) {
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+    totalUsage += weekdayAverages.get(cursor.getUTCDay()) ?? input.fallbackDailyUsage
+  }
+
+  return {
+    totalUsage: round(totalUsage, 3),
+    dailyUsage: round(totalUsage / Math.max(1, input.horizonDays), 3),
+    method: 'weekday',
+  }
+}
+
 const riskFor = (input: {
   predictedOnHand: number
   avgDailyUsage: number
@@ -391,13 +447,22 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
       for (const position of positions) {
         const forecast = forecastBySku.get(position.skuId)
         const calibration = calibrationFor(db, position.skuId)
-        const avgDailyUsage = Math.max(0, (forecast ? toNumber(forecast.avg_daily_usage) : position.avgDailyUsage) + calibration.usageAdjustmentDaily)
+        const baselineDailyUsage = Math.max(0, (forecast ? toNumber(forecast.avg_daily_usage) : position.avgDailyUsage) + calibration.usageAdjustmentDaily)
+        const projectedUsage = projectedUsageForHorizon({
+          db,
+          skuId: position.skuId,
+          asOf: resolved.asOf,
+          horizonDays: resolved.horizonDays,
+          usageWindowDays: resolved.usageWindowDays,
+          fallbackDailyUsage: baselineDailyUsage,
+        })
+        const avgDailyUsage = Math.max(0, projectedUsage.dailyUsage)
         const vendorCost = cheapestVendorCost(db, position.skuId)
         const latestCost = latestPurchaseCost(db, position.skuId)
         const countAge = latestCountAgeDays(db, position.skuId, resolved.asOf)
         const shrinkDaily = shrinkRate(db, position.skuId, resolved.asOf, resolved.usageWindowDays)
         const leadTime = vendorCost ? 2 : 4
-        const predictedOnHand = round(position.onHand - avgDailyUsage * resolved.horizonDays - shrinkDaily * resolved.horizonDays, 2)
+        const predictedOnHand = round(position.onHand - projectedUsage.totalUsage - shrinkDaily * resolved.horizonDays, 2)
         const predictedDaysRemaining = avgDailyUsage > 0 ? round(Math.max(0, predictedOnHand) / avgDailyUsage, 1) : null
         const confidencePenalty = countAge === null ? 0.15 : Math.min(0.25, countAge / 120)
         const confidence = round(
@@ -453,6 +518,9 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
             vendorCost,
             latestCost,
             calibration,
+            baselineDailyUsage: round(baselineDailyUsage, 3),
+            projectionMethod: projectedUsage.method,
+            projectedUsage: projectedUsage.totalUsage,
             targetAsOf: targetAsOf(resolved.asOf, resolved.horizonDays),
           }),
         )
