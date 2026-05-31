@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAccuracy, backboneActions, backboneAudit, backboneEnvs, backboneListen, backboneMatrix, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneAccuracy, backboneActions, backboneAudit, backboneEnvs, backboneExplain, backboneListen, backboneMatrix, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -84,6 +84,12 @@ export const createCommands = (
     usage: 'bbk backbone accuracy [--env <name>] [--min-samples <n>]',
     summary: 'Report scored Backbone prediction accuracy and calibration drift.',
     handler: backboneAccuracy,
+  },
+  {
+    path: ['backbone', 'explain'],
+    usage: 'bbk backbone explain [--env <name>] [--sku <name>]',
+    summary: 'Explain the evidence behind the latest Backbone prediction.',
+    handler: backboneExplain,
   },
   {
     path: ['backbone', 'actions'],

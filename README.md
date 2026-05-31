@@ -65,6 +65,7 @@ npm run bbk -- backbone run --horizon-days 7
 npm run bbk -- backbone status
 npm run bbk -- backbone actions
 npm run bbk -- backbone accuracy
+npm run bbk -- backbone explain --sku "Backbone Vodka 1L"
 npm run bbk -- backbone audit
 npm run bbk -- backbone envs
 ```
@@ -72,6 +73,8 @@ npm run bbk -- backbone envs
 `bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals.
 
 `bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
+
+`bbk backbone explain` opens the evidence behind a prediction: projection method, count age, vendor costs, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
 
 For continuous terminal operation, run the listener. It attempts a Toast pull every cycle, runs OpenClaw review generation, and refreshes Backbone predictions. Temporary Toast failures are reported as warnings without stopping local prediction runs.
 

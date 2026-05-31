@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { openDatabase, toNumber, type Db } from '../db/database.js'
+import { openDatabase, parseJson, toNumber, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
 import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel } from '../backbone/index.js'
 import {
@@ -34,6 +34,7 @@ type ParsedOptions = {
   recoverStaleMinutes?: number
   cursorLookbackMinutes?: number
   minSamples?: number
+  sku?: string
 }
 
 type AuditCheck = {
@@ -64,6 +65,30 @@ type AccuracySummary = {
   meanAbsErrorQty: number
   biasQty: number
   latestFeedback: string
+}
+
+type PredictionEvidence = {
+  positionWarningState?: string
+  countAgeDays?: number | null
+  shrinkDaily?: number
+  vendorCost?: {
+    vendorName?: string
+    unitCost?: number | null
+    packSize?: number
+    price?: number | null
+  } | null
+  latestCost?: number | null
+  highHistoricalCost?: number | null
+  calibration?: {
+    sampleCount?: number
+    usageAdjustmentDaily?: number
+    confidenceAdjustment?: number
+    meanBottleError?: number
+  }
+  baselineDailyUsage?: number
+  projectionMethod?: string
+  projectedUsage?: number
+  targetAsOf?: string
 }
 
 export const backboneRun = async (args: string[], context: CommandContext): Promise<void> => {
@@ -200,6 +225,68 @@ export const backboneAccuracy = async (args: string[], context: CommandContext):
   })
 }
 
+export const backboneExplain = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  context.terminal.title('Backbone explanation')
+
+  await withBackboneTargetDb(context, options, (db, target) => {
+    const row = latestPredictionRow(db, options.sku)
+    if (!row) {
+      context.terminal.warn(options.sku ? `No Backbone prediction found for ${options.sku}.` : 'No Backbone predictions yet.')
+      context.terminal.subtitle('Run `bbk backbone run`, `bbk backbone listen --once`, or `bbk backbone simulate --env <name>`.')
+      return
+    }
+
+    const evidence = parseJson<PredictionEvidence>(row.evidence_json, {})
+    context.terminal.dump({
+      target,
+      runId: row.run_id,
+      asOf: row.as_of,
+      sku: row.sku_name,
+      risk: row.low_stock_risk,
+      confidence: row.confidence,
+      predictedOnHand: `${row.predicted_on_hand} ${row.unit}`,
+      onHand: `${row.on_hand} ${row.unit}`,
+      daysRemaining: row.predicted_days_remaining ?? '',
+      costSignal: row.cost_signal,
+    })
+
+    context.terminal.section('Projection evidence')
+    context.terminal.table([
+      {
+        method: evidence.projectionMethod ?? 'unknown',
+        baselineDailyUsage: evidence.baselineDailyUsage ?? '',
+        projectedUsage: evidence.projectedUsage ?? '',
+        avgDailyUsage: row.avg_daily_usage,
+        targetAsOf: evidence.targetAsOf ?? '',
+        countAgeDays: evidence.countAgeDays ?? '',
+        sourceWarning: evidence.positionWarningState ?? '',
+      },
+    ])
+
+    context.terminal.section('Cost evidence')
+    context.terminal.table([
+      {
+        vendor: evidence.vendorCost?.vendorName ?? '',
+        vendorUnitCost: evidence.vendorCost?.unitCost ?? '',
+        latestUnitCost: evidence.latestCost ?? '',
+        highHistoricalUnitCost: evidence.highHistoricalCost ?? '',
+        shrinkDaily: evidence.shrinkDaily ?? '',
+      },
+    ])
+
+    context.terminal.section('Calibration evidence')
+    context.terminal.table([
+      {
+        samples: evidence.calibration?.sampleCount ?? 0,
+        usageAdjustDaily: evidence.calibration?.usageAdjustmentDaily ?? 0,
+        confidenceAdjust: evidence.calibration?.confidenceAdjustment ?? 0,
+        meanBottleError: evidence.calibration?.meanBottleError ?? 0,
+      },
+    ])
+  })
+}
+
 export const backboneAudit = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const maxAgeMinutes = options.maxAgeMinutes ?? 60
@@ -224,6 +311,31 @@ export const backboneAudit = async (args: string[], context: CommandContext): Pr
         : 'Backbone audit passed.',
     )
   })
+}
+
+const latestPredictionRow = (db: Db, sku?: string): any | null => {
+  const skuFilter = sku ? 'AND p.sku_name LIKE ?' : ''
+  const params = sku ? [`%${sku}%`] : []
+  return db
+    .prepare(
+      `SELECT p.*, r.as_of
+       FROM backbone_predictions p
+       JOIN backbone_runs r ON r.id = p.run_id
+       WHERE r.status = 'completed'
+         ${skuFilter}
+       ORDER BY r.created_at DESC,
+         CASE p.low_stock_risk
+           WHEN 'critical' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'low' THEN 2
+           WHEN 'watch' THEN 3
+           ELSE 4
+         END,
+         p.predicted_on_hand,
+         p.id
+       LIMIT 1`,
+    )
+    .get(...params)
 }
 
 const withBackboneTargetDb = async <T>(
@@ -996,6 +1108,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--min-samples' && next) {
       parsed.minSamples = nonNegativeNumber(next, '--min-samples')
+      index += 1
+    } else if (arg === '--sku' && next) {
+      parsed.sku = next
       index += 1
     }
   }
