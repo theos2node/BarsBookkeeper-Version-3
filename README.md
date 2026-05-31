@@ -126,7 +126,7 @@ When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu ite
 
 `bbk backbone drift` is the learning health check. It reports feedback sample count, overall bottle error, directional bias in bottle units, feedback freshness, recent-vs-prior error movement, prediction-band coverage, and the SKU drift watchlist. Add `--env <name>` for sandboxed simulations and tighten gates with `--max-bottle-mae`, `--max-bias-bottles`, or `--max-feedback-age-days`.
 
-`bbk backbone explain` opens the evidence behind a prediction: projection method, count age, uncertainty band, stockout probability, vendor costs, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
+`bbk backbone explain` opens the evidence behind a prediction: projection method, count age, uncertainty band, stockout probability, vendor costs, vendor lead time, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
 
 For continuous terminal operation, run the listener. It attempts a Toast pull every cycle, runs OpenClaw review generation, and refreshes Backbone predictions. Temporary Toast failures are reported as warnings without stopping local prediction runs.
 

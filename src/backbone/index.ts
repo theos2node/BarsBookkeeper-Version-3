@@ -51,6 +51,7 @@ type VendorCost = {
   unitCost: number | null
   packSize: number
   price: number | null
+  leadTimeDays: number
 }
 
 type Calibration = {
@@ -272,7 +273,10 @@ const calibrationFor = (db: Db, skuId: number): Calibration => {
 const cheapestVendorCost = (db: Db, skuId: number): VendorCost | null => {
   const row = db
     .prepare(
-      `SELECT v.name AS vendor_name, vi.pack_size, vi.price
+      `SELECT v.name AS vendor_name,
+              vi.pack_size,
+              vi.price,
+              vi.lead_time_days
        FROM vendor_items vi
        JOIN vendors v ON v.id = vi.vendor_id
        WHERE vi.sku_id = ? AND vi.active = 1
@@ -291,6 +295,7 @@ const cheapestVendorCost = (db: Db, skuId: number): VendorCost | null => {
     unitCost: price === null ? null : price / packSize,
     packSize,
     price,
+    leadTimeDays: Math.max(1, toNumber(row.lead_time_days, 2)),
   }
 }
 
@@ -598,7 +603,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         const highHistoricalCost = highHistoricalPurchaseCost(db, position.skuId, resolved.asOf)
         const countAge = latestCountAgeDays(db, position.skuId, resolved.asOf)
         const shrinkDaily = shrinkRate(db, position.skuId, resolved.asOf, resolved.usageWindowDays)
-        const leadTime = vendorCost ? 2 : 4
+        const leadTime = vendorCost?.leadTimeDays ?? 4
         const rawPredictedOnHand = position.onHand - projectedUsage.totalUsage - shrinkDaily * resolved.horizonDays
         const predictedOnHand = round(Math.max(0, rawPredictedOnHand), 2)
         const predictedDaysRemaining = avgDailyUsage > 0 ? round(Math.max(0, predictedOnHand) / avgDailyUsage, 1) : null

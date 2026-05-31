@@ -248,6 +248,7 @@ type PredictionEvidence = {
     unitCost?: number | null
     packSize?: number
     price?: number | null
+    leadTimeDays?: number
   } | null
   latestCost?: number | null
   highHistoricalCost?: number | null
@@ -1081,6 +1082,7 @@ export const backboneExplain = async (args: string[], context: CommandContext): 
       {
         vendor: evidence.vendorCost?.vendorName ?? '',
         vendorUnitCost: evidence.vendorCost?.unitCost ?? '',
+        leadTimeDays: evidence.vendorCost?.leadTimeDays ?? '',
         latestUnitCost: evidence.latestCost ?? '',
         highHistoricalUnitCost: evidence.highHistoricalCost ?? '',
         shrinkDaily: evidence.shrinkDaily ?? '',

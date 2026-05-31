@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
+import { ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../src/db/repositories.js'
+import { ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
 import { getLatestBackboneRun, runBackboneModel } from '../src/backbone/index.js'
 import { backboneSimulationScenarios, runBackboneAccuracySimulation, runBackboneRollingBacktest } from '../src/backbone/simulation.js'
 
@@ -184,5 +186,59 @@ describe('Backbone prediction model', () => {
 
     expect(calibrated.calibratedSkus).toBeGreaterThanOrEqual(3)
     expect(calibrated.predictions.filter((prediction) => prediction.skuName.startsWith('Backbone ') && prediction.calibrationSamples > 0)).toHaveLength(3)
+  })
+
+  it('uses vendor lead time when escalating low-stock risk', () => {
+    const vendorId = ensureVendor(db, 'Slow Distributor')
+    const skuId = ensureSku(db, { name: 'Slow Gin 1L', unit: 'ml', category: 'liquor' })
+    ensureVendorItem(db, {
+      vendorId,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 30,
+      leadTimeDays: 5,
+      minOrderQty: 1000,
+    })
+    const menuItemId = ensureMenuItem(db, 'Slow Gin Martini', 'slow-gin-martini', 'cocktails')
+    upsertRecipeItem(db, { menuItemId, skuId, quantity: 100, unit: 'ml' })
+    ingestInvoices(db, [
+      {
+        vendor: 'Slow Distributor',
+        invoiceNumber: 'SLOW-GIN-OPEN',
+        invoiceDate: '2026-05-01T09:00:00.000Z',
+        sku: 'Slow Gin 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.03,
+        category: 'liquor',
+      },
+    ])
+    for (let day = 1; day <= 5; day += 1) {
+      ingestToastSales(db, [
+        {
+          externalId: `SLOW-GIN-${day}`,
+          occurredAt: `2026-05-0${day}T21:00:00.000Z`,
+          menuItem: 'Slow Gin Martini',
+          quantitySold: 1,
+        },
+      ])
+    }
+
+    const run = runBackboneModel(db, {
+      asOf: '2026-05-05T23:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 5,
+      mode: 'evaluation',
+    })
+    const prediction = run.predictions.find((row) => row.skuName === 'Slow Gin 1L')
+    const evidence = JSON.parse(
+      String(db.prepare('SELECT evidence_json FROM backbone_predictions WHERE run_id = ? AND sku_id = ?').get(run.runId, skuId)?.evidence_json),
+    )
+
+    expect(prediction?.predictedDaysRemaining).toBeGreaterThan(2)
+    expect(prediction?.predictedDaysRemaining).toBeLessThanOrEqual(5)
+    expect(prediction?.lowStockRisk).toBe('high')
+    expect(evidence.vendorCost.leadTimeDays).toBe(5)
   })
 })
