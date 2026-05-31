@@ -172,6 +172,7 @@ process.exit(1)
     expect(backboneService).toContain('com.barsbookkeeper.test')
     expect(backboneService).toContain('launchctl load')
     expect(listenOutput).toContain('Backbone listener stopped after 2 cycles')
+    expect(listenOutput).toContain('listener lock acquired')
     expect(listenOutput).toContain('file:')
     expect(resilientListenOutput).toContain('OpenClaw skipped this cycle: simulated_openclaw_failure')
     expect(resilientListenOutput).toContain('Backbone listener stopped after 1 cycle')
@@ -329,6 +330,49 @@ process.exit(1)
     ).toBe(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'completed'")).toBe(1)
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runs')).toBe(1)
+    expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runtime_locks')).toBe(0)
+  })
+
+  it('takes over stale Backbone listener locks but rejects active concurrent listeners', async () => {
+    await expectCliOk(['setup'], dataDir)
+    await expectCliOk(['seed-demo'], dataDir)
+
+    const lockDb = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    lockDb
+      .prepare(
+        `INSERT INTO backbone_runtime_locks (name, owner, acquired_at, heartbeat_at, expires_at)
+         VALUES ('backbone-listener', 'stale-owner', '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z', '2026-05-01T00:01:00.000Z')`,
+      )
+      .run()
+    lockDb.close()
+
+    const recovered = await expectCliOk(
+      ['backbone', 'listen', '--cycles', '1', '--interval-ms', '0', '--skip-toast', '--skip-openclaw'],
+      dataDir,
+    )
+    expect(recovered).toContain('listener lock acquired')
+
+    db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runtime_locks')).toBe(0)
+    db.close()
+    db = undefined
+
+    const activeDb = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    activeDb
+      .prepare(
+        `INSERT INTO backbone_runtime_locks (name, owner, acquired_at, heartbeat_at, expires_at)
+         VALUES ('backbone-listener', 'active-owner', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`,
+      )
+      .run(expiresAt)
+    activeDb.close()
+
+    const blocked = await runCli(
+      ['backbone', 'listen', '--cycles', '1', '--interval-ms', '0', '--skip-toast', '--skip-openclaw'],
+      dataDir,
+    )
+    expect(blocked.code).toBe(1)
+    expect(blocked.output).toContain('backbone_listener_lock_held:active-owner')
   })
 
   it('dry-runs and force-prunes isolated Backbone environments safely', async () => {

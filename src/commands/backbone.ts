@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { hostname } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
@@ -46,6 +47,7 @@ type ParsedOptions = {
   countCadenceDays?: number
   warmupDays?: number
   label?: string
+  lockTtlMinutes?: number
 }
 
 type AuditCheck = {
@@ -1059,8 +1061,11 @@ export const backboneListen = async (args: string[], context: CommandContext): P
   const cycles = options.cycles ?? Number.POSITIVE_INFINITY
   const intervalMs = options.intervalMs ?? 5 * 60 * 1000
   const recoverStaleMinutes = options.recoverStaleMinutes ?? Math.max(15, Math.ceil((intervalMs * 3) / 60_000))
+  const lockTtlMinutes = options.lockTtlMinutes ?? Math.max(5, recoverStaleMinutes, Math.ceil((intervalMs * 3) / 60_000))
+  const lockOwner = `${hostname()}:${process.pid}`
   let stopped = false
   let completed = 0
+  let lockAcquired = false
 
   const stop = () => {
     stopped = true
@@ -1082,7 +1087,19 @@ export const backboneListen = async (args: string[], context: CommandContext): P
     if (recovered > 0) {
       context.terminal.warn(`Recovered ${recovered} stale Backbone listener cycle${recovered === 1 ? '' : 's'}.`)
     }
+    acquireRuntimeLock(db, {
+      name: 'backbone-listener',
+      owner: lockOwner,
+      ttlMinutes: lockTtlMinutes,
+    })
+    lockAcquired = true
+    context.terminal.status('ok', 'listener lock acquired', `${lockOwner}; ttl ${lockTtlMinutes}m`)
     while (!stopped && completed < cycles) {
+      heartbeatRuntimeLock(db, {
+        name: 'backbone-listener',
+        owner: lockOwner,
+        ttlMinutes: lockTtlMinutes,
+      })
       completed += 1
       const cycleStarted = new Date().toISOString()
       const cycleId = startListenerCycle(db, cycleStarted)
@@ -1134,10 +1151,16 @@ export const backboneListen = async (args: string[], context: CommandContext): P
       }
 
       if (stopped || completed >= cycles) break
+      heartbeatRuntimeLock(db, {
+        name: 'backbone-listener',
+        owner: lockOwner,
+        ttlMinutes: lockTtlMinutes,
+      })
       await sleep(intervalMs)
     }
     context.terminal.success(`Backbone listener stopped after ${completed} cycle${completed === 1 ? '' : 's'}.`)
   } finally {
+    if (lockAcquired) releaseRuntimeLock(db, { name: 'backbone-listener', owner: lockOwner })
     process.removeListener('SIGINT', stop)
     process.removeListener('SIGTERM', stop)
     db.close()
@@ -1922,6 +1945,51 @@ const recoverStaleListenerCycles = (db: any, maxAgeMinutes: number): number => {
   return toNumber(result.changes)
 }
 
+const acquireRuntimeLock = (
+  db: any,
+  input: { name: string; owner: string; ttlMinutes: number },
+): void => {
+  const now = new Date()
+  const expiresAt = new Date(now.getTime() + Math.max(1, input.ttlMinutes) * 60_000).toISOString()
+  const existing = db.prepare('SELECT owner, expires_at FROM backbone_runtime_locks WHERE name = ?').get(input.name)
+  if (existing && new Date(String(existing.expires_at)).getTime() > now.getTime() && String(existing.owner) !== input.owner) {
+    throw new Error(`backbone_listener_lock_held:${existing.owner}:expires:${existing.expires_at}`)
+  }
+
+  db.prepare(
+    `INSERT INTO backbone_runtime_locks (name, owner, acquired_at, heartbeat_at, expires_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET
+       owner = excluded.owner,
+       acquired_at = excluded.acquired_at,
+       heartbeat_at = excluded.heartbeat_at,
+       expires_at = excluded.expires_at`,
+  ).run(input.name, input.owner, now.toISOString(), now.toISOString(), expiresAt)
+}
+
+const heartbeatRuntimeLock = (
+  db: any,
+  input: { name: string; owner: string; ttlMinutes: number },
+): void => {
+  const now = new Date()
+  const expiresAt = new Date(now.getTime() + Math.max(1, input.ttlMinutes) * 60_000).toISOString()
+  const result = db
+    .prepare(
+      `UPDATE backbone_runtime_locks
+       SET heartbeat_at = ?, expires_at = ?
+       WHERE name = ? AND owner = ?`,
+    )
+    .run(now.toISOString(), expiresAt, input.name, input.owner)
+  if (toNumber(result.changes) === 0) throw new Error(`backbone_listener_lock_lost:${input.name}`)
+}
+
+const releaseRuntimeLock = (
+  db: any,
+  input: { name: string; owner: string },
+): void => {
+  db.prepare('DELETE FROM backbone_runtime_locks WHERE name = ? AND owner = ?').run(input.name, input.owner)
+}
+
 const finishListenerCycle = (
   db: any,
   cycleId: number,
@@ -2156,6 +2224,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--label' && next) {
       parsed.label = next
+      index += 1
+    } else if (arg === '--lock-ttl-minutes' && next) {
+      parsed.lockTtlMinutes = positiveNumber(next, '--lock-ttl-minutes')
       index += 1
     }
   }

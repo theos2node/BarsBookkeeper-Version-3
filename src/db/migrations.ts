@@ -336,6 +336,22 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_backbone_verifications_status ON backbone_verifications(status);
     `,
   },
+  {
+    id: 7,
+    name: 'backbone_runtime_locks',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_runtime_locks (
+        name TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_runtime_locks_expires ON backbone_runtime_locks(expires_at);
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {
