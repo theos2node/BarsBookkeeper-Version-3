@@ -578,7 +578,8 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         const countAge = latestCountAgeDays(db, position.skuId, resolved.asOf)
         const shrinkDaily = shrinkRate(db, position.skuId, resolved.asOf, resolved.usageWindowDays)
         const leadTime = vendorCost ? 2 : 4
-        const predictedOnHand = round(position.onHand - projectedUsage.totalUsage - shrinkDaily * resolved.horizonDays, 2)
+        const rawPredictedOnHand = position.onHand - projectedUsage.totalUsage - shrinkDaily * resolved.horizonDays
+        const predictedOnHand = round(Math.max(0, rawPredictedOnHand), 2)
         const predictedDaysRemaining = avgDailyUsage > 0 ? round(Math.max(0, predictedOnHand) / avgDailyUsage, 1) : null
         const confidencePenalty = countAge === null ? 0.15 : Math.min(0.25, countAge / 120)
         const confidence = round(
@@ -595,7 +596,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
           shrinkDaily,
           bottleSize: bottleSize(db, position.skuId),
         })
-        const predictedLowerOnHand = round(predictedOnHand - uncertainty, 2)
+        const predictedLowerOnHand = round(Math.max(0, predictedOnHand - uncertainty), 2)
         const predictedUpperOnHand = round(predictedOnHand + uncertainty, 2)
         const stockoutProbability = stockoutProbabilityFor(predictedOnHand, uncertainty)
         const risk = riskFor({
@@ -661,6 +662,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
             projectionMethod: projectedUsage.method,
             trend: projectedUsage.trend,
             projectedUsage: projectedUsage.totalUsage,
+            rawPredictedOnHand: round(rawPredictedOnHand, 2),
             uncertainty,
             targetAsOf: targetAsOf(resolved.asOf, resolved.horizonDays),
           }),

@@ -31,6 +31,8 @@ describe('Backbone prediction model', () => {
     expect(result.calibratedSkus).toBeGreaterThanOrEqual(3)
     expect(result.predictions.some((prediction) => prediction.sku === 'Backbone Vodka 1L' && prediction.costSignal.includes('saves'))).toBe(true)
     expect(getLatestBackboneRun(db)?.predictionCount).toBeGreaterThanOrEqual(3)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'count' AND external_id LIKE 'NOTE-%'").get()?.count).toBeGreaterThanOrEqual(6)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM sources WHERE name LIKE 'Backbone sparse % notes'").get()?.count).toBeGreaterThanOrEqual(2)
   })
 
   it('persists uncertainty bands and stockout probability with each prediction', () => {
@@ -144,6 +146,7 @@ describe('Backbone prediction model', () => {
     expect(result.uncertaintyCoverage).toBeGreaterThanOrEqual(0.95)
     expect(result.meanBandBottles).toBeLessThanOrEqual(1.75)
     expect(result.shrinkSignals).toBeGreaterThan(0)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'count' AND external_id LIKE 'NOTE-%'").get()?.count).toBe(6)
   })
 
   it('finds cost-cutting options learned from sparse vendor invoice drift', () => {

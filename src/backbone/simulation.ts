@@ -1,6 +1,7 @@
 import { getInventoryPositions } from '../db/inventory.js'
 import { toNumber, type Db } from '../db/database.js'
-import { ingestCounts, ingestInvoices, ingestToastSales, type CountRow, type InvoiceRow, type ToastSalesRow } from '../ingest/index.js'
+import { ingestInvoices, ingestToastSales, type InvoiceRow, type ToastSalesRow } from '../ingest/index.js'
+import { ingestInventoryNotes } from '../ingest/notes.js'
 import { ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../db/repositories.js'
 import { runBackboneModel, scoreBackboneFeedback, type BackbonePrediction, type BackboneRunResult } from './index.js'
 
@@ -233,7 +234,7 @@ const actualOnHand = (
   day: number,
   profile: ScenarioProfile,
   sku: 'vodka' | 'tequila' | 'tripleSec',
-): number => profile.initial[sku] + latePurchase(profile, sku, day) - cumulativeConsumption(start, day, profile, sku) - hiddenShrink(profile, sku, day)
+): number => Math.max(0, profile.initial[sku] + latePurchase(profile, sku, day) - cumulativeConsumption(start, day, profile, sku) - hiddenShrink(profile, sku, day))
 
 const skuKey = (skuName: string): 'vodka' | 'tequila' | 'tripleSec' | null => {
   if (skuName.includes('Vodka')) return 'vodka'
@@ -257,7 +258,7 @@ export const runBackboneAccuracySimulation = (
     if (profile.lateCheapVodkaInvoice?.day === day) {
       ingestInvoices(db, simulationLateInvoices(start, profile), 'Backbone sparse vendor invoices')
     }
-    if (day === 15) ingestCounts(db, countSnapshot(start, day, profile, 'mid'), 'Backbone sparse hand counts')
+    if (day === 15) ingestCountNote(db, start, day, profile, 'mid', 'Backbone sparse manager notes')
   }
 
   const asOf = isoDay(start, trainingDays, 23)
@@ -270,7 +271,7 @@ export const runBackboneAccuracySimulation = (
 
   const actualDay = trainingDays + 1
   ingestToastSales(db, simulationSales(start, actualDay, profile), 'Backbone simulated Toast validation')
-  ingestCounts(db, countSnapshot(start, actualDay, profile, 'end'), 'Backbone sparse validation counts')
+  ingestCountNote(db, start, actualDay, profile, 'end', 'Backbone sparse validation notes')
 
   const actualAsOf = isoDay(start, actualDay, 23)
   const actualBySku = new Map(getInventoryPositions(db, { asOf: actualAsOf, usageWindowDays: 28 }).map((position) => [position.skuId, position]))
@@ -354,7 +355,7 @@ export const runBackboneRollingBacktest = (
 
     const isCountDay = day % countCadenceDays === 0 || day === days
     if (isCountDay) {
-      ingestCounts(db, countSnapshot(start, day, profile, day === days ? 'end' : 'mid'), 'Backbone rolling sparse hand counts')
+      ingestCountNote(db, start, day, profile, day === days ? 'end' : 'mid', 'Backbone rolling sparse manager notes')
       countSnapshots += 1
     }
 
@@ -496,11 +497,31 @@ const simulationSales = (start: Date, day: number, profile: ScenarioProfile): To
   ]
 }
 
-const countSnapshot = (start: Date, day: number, profile: ScenarioProfile, label: 'mid' | 'end'): CountRow[] => [
-  { countId: `BB-SIM-${profile.name}-${label}-VODKA-${day}`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: actualOnHand(start, day, profile, 'vodka'), unit: 'ml' },
-  { countId: `BB-SIM-${profile.name}-${label}-TEQUILA-${day}`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: actualOnHand(start, day, profile, 'tequila'), unit: 'ml' },
-  { countId: `BB-SIM-${profile.name}-${label}-TRIPLE-${day}`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: actualOnHand(start, day, profile, 'tripleSec'), unit: 'ml' },
-]
+const ingestCountNote = (
+  db: Db,
+  start: Date,
+  day: number,
+  profile: ScenarioProfile,
+  label: 'mid' | 'end',
+  sourceName: string,
+): void => {
+  const result = ingestInventoryNotes(db, countNote(start, day, profile), {
+    occurredAt: isoDay(start, day, 23),
+    sourceName,
+  })
+  if (result.rows.length !== 3 || result.skipped.length > 0 || result.ingest?.recordsImported !== 3) {
+    throw new Error(`backbone_simulation_note_ingest_failed:${profile.name}:${label}:${day}`)
+  }
+}
+
+const countNote = (start: Date, day: number, profile: ScenarioProfile): string =>
+  [
+    `Backbone Vodka 1L ${bottles(actualOnHand(start, day, profile, 'vodka'))} bottles`,
+    `Backbone Tequila 1L ${bottles(actualOnHand(start, day, profile, 'tequila'))} bottles`,
+    `Backbone Triple Sec 1L ${bottles(actualOnHand(start, day, profile, 'tripleSec'))} bottles`,
+  ].join('\n')
+
+const bottles = (quantityMl: number): string => round(quantityMl / 1000, 3).toFixed(3)
 
 const hiddenShrink = (profile: ScenarioProfile, sku: keyof NonNullable<ScenarioProfile['hiddenShrinkDaily']>, day: number): number =>
   (profile.hiddenShrinkDaily?.[sku] ?? 0) * day

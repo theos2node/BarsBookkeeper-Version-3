@@ -12,6 +12,7 @@ export type InventoryNoteParseResult = {
 
 type NoteOptions = {
   occurredAt?: string
+  sourceName?: string
 }
 
 type SkuCandidate = {
@@ -19,6 +20,7 @@ type SkuCandidate = {
   name: string
   unit: string
   packSize: number
+  bottleSize: number | null
   tokens: Set<string>
 }
 
@@ -48,6 +50,15 @@ const normalizeUnit = (value: string): string => {
   return unit
 }
 
+const bottleSizeFromSkuName = (name: string, unit: string): number | null => {
+  const cleanUnit = unit.toLowerCase()
+  const liter = name.match(/(\d+(?:\.\d+)?)\s*l\b/i)
+  if (liter && cleanUnit === 'ml') return Number(liter[1]) * 1000
+  const milliliter = name.match(/(\d+(?:\.\d+)?)\s*ml\b/i)
+  if (milliliter && cleanUnit === 'ml') return Number(milliliter[1])
+  return null
+}
+
 const readSkuCandidates = (db: Db): SkuCandidate[] =>
   db
     .prepare(
@@ -69,13 +80,18 @@ const readSkuCandidates = (db: Db): SkuCandidate[] =>
        ORDER BY s.name`,
     )
     .all()
-    .map((row: any) => ({
-      id: toNumber(row.id),
-      name: String(row.name),
-      unit: String(row.unit || 'unit'),
-      packSize: Math.max(1, toNumber(row.pack_size, 1)),
-      tokens: tokensFor(String(row.name)),
-    }))
+    .map((row: any) => {
+      const name = String(row.name)
+      const unit = String(row.unit || 'unit')
+      return {
+        id: toNumber(row.id),
+        name,
+        unit,
+        packSize: Math.max(1, toNumber(row.pack_size, 1)),
+        bottleSize: bottleSizeFromSkuName(name, unit),
+        tokens: tokensFor(name),
+      }
+    })
 
 const parseQuantity = (text: string): { skuText: string; quantity: number; unit: string } | null => {
   const cleaned = text
@@ -122,7 +138,7 @@ const bestSkuMatch = (candidates: SkuCandidate[], skuText: string): SkuCandidate
 
 const toSkuQuantity = (candidate: SkuCandidate, quantity: number, unit: string): { quantity: number; unit: string } => {
   if (unit === 'bottle' && candidate.unit !== 'bottle') {
-    return { quantity: quantity * candidate.packSize, unit: candidate.unit }
+    return { quantity: quantity * (candidate.bottleSize ?? candidate.packSize), unit: candidate.unit }
   }
   return { quantity, unit: candidate.unit === unit ? candidate.unit : unit }
 }
@@ -166,6 +182,6 @@ export const ingestInventoryNotes = (
   if (options.dryRun || parsed.rows.length === 0) return parsed
   return {
     ...parsed,
-    ingest: ingestCounts(db, parsed.rows, 'Inventory notes'),
+    ingest: ingestCounts(db, parsed.rows, options.sourceName ?? 'Inventory notes'),
   }
 }
