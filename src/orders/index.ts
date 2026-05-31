@@ -25,6 +25,23 @@ const roundUpToMultiple = (value: number, multiple: number): number => {
   return Math.ceil(value / multiple) * multiple
 }
 
+const closeOpenRecommendationsForSku = (db: Db, skuId: number, exceptId?: number): void => {
+  if (exceptId) {
+    db.prepare(
+      `UPDATE order_recommendations
+       SET status = 'dismissed'
+       WHERE sku_id = ? AND status = 'open' AND id != ?`,
+    ).run(skuId, exceptId)
+    return
+  }
+
+  db.prepare(
+    `UPDATE order_recommendations
+     SET status = 'dismissed'
+     WHERE sku_id = ? AND status = 'open'`,
+  ).run(skuId)
+}
+
 export const generateVendorGroupedOrderRecommendations = (
   db: Db,
   options: OrderRecommendationOptions = {},
@@ -47,12 +64,19 @@ export const generateVendorGroupedOrderRecommendations = (
          LIMIT 1`,
       )
       .get(position.skuId)
-    if (!forecast || !vendorItem) continue
+    if (!forecast) continue
+    if (!vendorItem) {
+      closeOpenRecommendationsForSku(db, position.skuId)
+      continue
+    }
 
     const leadTimeDays = toNumber(vendorItem.lead_time_days, 2)
     const targetStock = Math.max(position.parLevel ?? 0, forecast.avgDailyUsage * (horizonDays + leadTimeDays))
     const rawNeed = targetStock - position.onHand
-    if (rawNeed <= 0) continue
+    if (rawNeed <= 0) {
+      closeOpenRecommendationsForSku(db, position.skuId)
+      continue
+    }
 
     const packSize = Math.max(1, toNumber(vendorItem.pack_size, 1))
     const minOrderQty = Math.max(0, toNumber(vendorItem.min_order_qty))
@@ -91,6 +115,7 @@ export const generateVendorGroupedOrderRecommendations = (
          WHERE id = ?`,
       ).run(recommendedQty, position.unit, estimatedCost, reason, confidence, recommendationId)
     }
+    closeOpenRecommendationsForSku(db, position.skuId, recommendationId)
 
     const group =
       groups.get(vendorId) ??

@@ -123,8 +123,10 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
   nav.select(0)
   main.focus()
 
+  const screenWidth = (): number => (typeof screen.width === 'number' ? screen.width : Number(screen.width) || 80)
+
   const setStatus = (message: string): void => {
-    footer.setContent(` ${message}  |  q quit  tab view  r refresh  w workflow  s simulate `)
+    footer.setContent(` ${truncate(`${message} | q quit tab view r refresh w workflow s simulate`, Math.max(20, screenWidth() - 2))}`)
     screen.render()
   }
 
@@ -186,7 +188,7 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
     nav.select(panels.indexOf(activePanel))
     main.setLabel(` ${activePanel} `)
     const rows = tableFor(activePanel, currentState)
-    main.setContent(renderTextTable(rows.length > 0 ? rows : [['status', 'none']]))
+    main.setContent(renderTextTable(rows.length > 0 ? rows : [['status', 'none']], Math.max(24, screenWidth() - 26)))
     detail.setContent(detailFor(activePanel, currentState))
     screen.render()
   }
@@ -352,16 +354,21 @@ const rowsToTable = (rows: Array<Record<string, string | number>>): string[][] =
   return [headers, ...rows.map((row) => headers.map((header) => toStringValue(row[header])))]
 }
 
-const renderTextTable = (rows: string[][]): string => {
-  const widths = rows[0]?.map((_, column) =>
-    Math.min(
-      36,
-      Math.max(
-        3,
-        ...rows.map((row) => plain(row[column] ?? '').length),
+const renderTextTable = (rows: string[][], maxWidth = 100): string => {
+  const separatorWidth = Math.max(0, (rows[0]?.length ?? 1) - 1) * 3
+  const availableWidth = Math.max(12, maxWidth - separatorWidth)
+  const widths = fitWidths(
+    rows[0]?.map((_, column) =>
+      Math.min(
+        36,
+        Math.max(
+          3,
+          ...rows.map((row) => plain(row[column] ?? '').length),
+        ),
       ),
-    ),
-  ) ?? []
+    ) ?? [],
+    availableWidth,
+  )
   return rows
     .map((row, index) =>
       row
@@ -381,6 +388,16 @@ const truncate = (value: string, width: number): string => {
 }
 
 const pad = (value: string, width: number): string => value.padEnd(width)
+
+const fitWidths = (widths: number[], availableWidth: number): number[] => {
+  const fitted = [...widths]
+  while (fitted.reduce((total, width) => total + width, 0) > availableWidth) {
+    const widestIndex = fitted.reduce((widest, width, index) => (width > fitted[widest] ? index : widest), 0)
+    if ((fitted[widestIndex] ?? 0) <= 6) break
+    fitted[widestIndex] -= 1
+  }
+  return fitted
+}
 
 const detailFor = (panel: PanelName, state: DashboardState): string => {
   if (panel === 'Overview') {

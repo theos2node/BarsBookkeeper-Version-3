@@ -190,6 +190,56 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
     `,
   },
+  {
+    id: 2,
+    name: 'backbone_prediction_runs',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_environments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        db_path TEXT NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_run_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS backbone_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        environment_id INTEGER REFERENCES backbone_environments(id),
+        mode TEXT NOT NULL CHECK (mode IN ('live', 'simulation', 'evaluation')),
+        as_of TEXT NOT NULL,
+        horizon_days INTEGER NOT NULL,
+        usage_window_days INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        metrics_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS backbone_predictions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES backbone_runs(id) ON DELETE CASCADE,
+        sku_id INTEGER NOT NULL REFERENCES skus(id),
+        sku_name TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        on_hand REAL NOT NULL,
+        predicted_on_hand REAL NOT NULL,
+        predicted_days_remaining REAL,
+        avg_daily_usage REAL NOT NULL,
+        confidence REAL NOT NULL,
+        low_stock_risk TEXT NOT NULL CHECK (low_stock_risk IN ('ok', 'watch', 'low', 'high', 'critical')),
+        recommended_order_qty REAL NOT NULL DEFAULT 0,
+        estimated_cost REAL,
+        cost_signal TEXT NOT NULL DEFAULT 'none',
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (run_id, sku_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_runs_created ON backbone_runs(created_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_predictions_run_risk ON backbone_predictions(run_id, low_stock_risk);
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

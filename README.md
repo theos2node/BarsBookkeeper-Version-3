@@ -43,11 +43,31 @@ npm run bbk -- toast connect --restaurants <toast-restaurant-id>
 npm run bbk -- toast pull --start 2026-05-10T00:00:00.000Z --end 2026-05-11T00:00:00.000Z
 npm run bbk -- toast pull --file ./samples/toast-orders.json
 npm run bbk -- brain run
+npm run bbk -- backbone run
+npm run bbk -- backbone status
+npm run bbk -- backbone simulate --env test-lab --days 30
 npm run bbk -- review
 npm run bbk -- review dismiss <decision-id> "reason"
 npm run bbk -- review apply <decision-id>
 npm run bbk -- review reverse <decision-id>
 ```
+
+## Backbone
+
+The Backbone model is the terminal-first prediction layer. It listens to the same SQLite event ledger built from Toast sales, invoices, and sparse hand counts, then persists each run in `backbone_runs` and `backbone_predictions`.
+
+```sh
+npm run bbk -- backbone run --horizon-days 7
+npm run bbk -- backbone status
+```
+
+For destructive or time-warped testing, use isolated environments. Each simulation gets its own database under `data/environments/<name>/`, so multiple tests can run without touching the base product database.
+
+```sh
+npm run bbk -- backbone simulate --env month-end-wrap --days 30
+```
+
+The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, and a validation day. It passes only when bottle-count error, low-stock detection, and cost-cutting detection all clear deterministic thresholds.
 
 ## Terminal Console
 
@@ -92,7 +112,7 @@ Default models:
 - Logic: `gpt-5.4` with low reasoning effort.
 - Fast: `gpt-5.4-mini` with low reasoning effort.
 
-`bbk brain run` uses deterministic OpenClaw policy rules by default so a manager can run it repeatedly without spending model calls. Set `OPENCLAW_USE_CODEX=1` when you want Codex to add a concise reasoning summary on top of the local policy pass.
+`bbk brain run` uses deterministic OpenClaw policy rules by default so a manager can run it repeatedly without spending model calls, then runs Backbone predictions over the updated ledger. Set `OPENCLAW_USE_CODEX=1` when you want Codex to add a concise reasoning summary on top of the local policy pass.
 
 For repeated smoke testing without model calls:
 

@@ -106,6 +106,8 @@ process.exit(1)
     await expectCliOk(['ingest', 'count', join(fixturesDir, 'smoke-count.csv')], dataDir)
     await expectCliOk(['toast', 'pull', '--file', join(fixturesDir, 'smoke-toast.json')], dataDir)
     await expectCliOk(['brain', 'run'], dataDir)
+    await expectCliOk(['backbone', 'run'], dataDir)
+    const backboneSimulation = await expectCliOk(['backbone', 'simulate', '--env', 'smoke', '--days', '30'], dataDir)
     await expectCliOk(['forecast', 'run'], dataDir)
     await expectCliOk(['orders', 'generate'], dataDir)
     const consoleOutput = await expectCliOk(['console'], dataDir)
@@ -113,18 +115,22 @@ process.exit(1)
     expect(consoleOutput).toContain('Snapshot')
     expect(consoleOutput).toContain('Inventory')
     expect(consoleOutput).toContain('Open order recommendations')
+    expect(backboneSimulation).toContain('bottleMae')
+    expect(backboneSimulation).toContain('lowStockRecall')
 
     db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
     const baseline = {
       sourceDocuments: scalar(db, 'SELECT COUNT(*) AS value FROM source_documents'),
       inventoryEvents: scalar(db, 'SELECT COUNT(*) AS value FROM inventory_events'),
       forecasts: scalar(db, 'SELECT COUNT(*) AS value FROM forecasts'),
+      backboneRuns: scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runs'),
       reviewTasks: scalar(db, "SELECT COUNT(*) AS value FROM openclaw_decisions WHERE state = 'needs_review'"),
       openOrders: scalar(db, "SELECT COUNT(*) AS value FROM order_recommendations WHERE status = 'open'"),
     }
 
     expect(baseline.sourceDocuments).toBeGreaterThanOrEqual(5)
     expect(baseline.forecasts).toBeGreaterThan(0)
+    expect(baseline.backboneRuns).toBeGreaterThan(0)
     expect(baseline.reviewTasks).toBeGreaterThan(0)
     expect(baseline.openOrders).toBeGreaterThan(0)
     expect(
@@ -138,6 +144,7 @@ process.exit(1)
 
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM source_documents')).toBe(baseline.sourceDocuments)
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM forecasts')).toBe(baseline.forecasts)
+    expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runs')).toBeGreaterThanOrEqual(baseline.backboneRuns)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM openclaw_decisions WHERE state = 'needs_review'")).toBe(
       baseline.reviewTasks,
     )

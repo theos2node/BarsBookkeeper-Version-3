@@ -129,6 +129,8 @@ export const reverseDecision = (db: Db, decisionId: number): number => {
   return withTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
     if (!decision) throw new Error(`decision_not_found:${decisionId}`)
+    const state = toStringValue(decision.state)
+    if (state !== 'auto_applied') throw new Error(`decision_not_reversible:${decisionId}:${state}`)
     const eventId = toNumber(decision.applied_inventory_event_id)
     if (!eventId) throw new Error(`decision_not_applied:${decisionId}`)
     const event = db.prepare('SELECT * FROM inventory_events WHERE id = ?').get(eventId)
@@ -161,7 +163,10 @@ export const dismissDecision = (db: Db, decisionId: number, reason = 'Dismissed 
   return withTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
     if (!decision) throw new Error(`decision_not_found:${decisionId}`)
-    if (toStringValue(decision.state) === 'auto_applied') {
+    const state = toStringValue(decision.state)
+    if (state === 'suppressed') return decisionId
+    if (state === 'reversed') throw new Error(`decision_not_dismissible:${decisionId}:reversed`)
+    if (state === 'auto_applied') {
       throw new Error(`decision_already_applied:${decisionId}`)
     }
     db.prepare(
@@ -184,6 +189,13 @@ export const dismissDecision = (db: Db, decisionId: number, reason = 'Dismissed 
   })
 }
 
+export const isInventoryMutationPayload = (payload: Record<string, unknown>): boolean => {
+  const eventType = toStringValue(payload.eventType)
+  const skuName = toStringValue(payload.skuName)
+  const quantity = toNumber(payload.quantity)
+  return Boolean(eventType && skuName && quantity !== 0)
+}
+
 export const applyExistingDecision = (db: Db, decisionId: number): number => {
   return withTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
@@ -197,8 +209,10 @@ export const applyExistingDecision = (db: Db, decisionId: number): number => {
     const skuName = toStringValue(payload.skuName)
     const quantity = toNumber(payload.quantity)
     const unit = toStringValue(payload.unit, 'unit')
-    if (!eventType || !skuName || quantity === 0) {
-      throw new Error(`decision_has_no_inventory_mutation:${decisionId}`)
+    if (!isInventoryMutationPayload(payload)) {
+      throw new Error(
+        `decision_not_applicable:${decisionId}:review task has no inventory mutation; use bbk review dismiss ${decisionId} "<reason>" after resolving it`,
+      )
     }
 
     if (payload.vendorName) ensureVendor(db, toStringValue(payload.vendorName))
@@ -238,7 +252,15 @@ export const getReviewQueue = (db: Db) =>
       `SELECT id, title, risk_level, confidence, payload_json, evidence_json, created_at
        FROM openclaw_decisions
        WHERE state = 'needs_review'
-       ORDER BY risk_level DESC, created_at DESC`,
+       ORDER BY
+         CASE risk_level
+           WHEN 'critical' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'medium' THEN 2
+           WHEN 'low' THEN 3
+           ELSE 4
+         END,
+         created_at DESC`,
     )
     .all()
 

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { applyDecision, applyExistingDecision, dismissDecision, reverseDecision } from '../src/brain/decisions.js'
+import { applyReviewDecision } from '../src/brain/index.js'
+import { runOpenClawBrain } from '../src/brain/openclaw.js'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { getInventoryPosition, getInventoryPositions } from '../src/db/inventory.js'
 import { migrateDatabase } from '../src/db/migrations.js'
@@ -116,6 +118,9 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(reversalId).toBeGreaterThan(eventId)
     expect(getInventoryPosition(db, skuId)?.onHand).toBe(0)
     expect(db.prepare('SELECT COUNT(*) AS count FROM audit_log').get()?.count).toBe(3)
+    expect(() => reverseDecision(db, decisionId)).toThrow('decision_not_reversible')
+    expect(() => dismissDecision(db, decisionId, 'Wrong queue')).toThrow('decision_not_dismissible')
+    expect(getInventoryPosition(db, skuId)?.onHand).toBe(0)
   })
 
   it('can dismiss or apply manager-reviewed OpenClaw decisions', () => {
@@ -155,6 +160,23 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(db.prepare('SELECT state FROM openclaw_decisions WHERE id = ?').get(dismissId)?.state).toBe('suppressed')
   })
 
+  it('keeps advisory review tasks out of the inventory mutation apply path', async () => {
+    seedDemoData(db, asOf)
+    await runOpenClawBrain(db)
+    const advisoryId = Number(
+      db
+        .prepare("SELECT id FROM openclaw_decisions WHERE state = 'needs_review' AND payload_json LIKE '%inventory_risk_review%' ORDER BY id LIMIT 1")
+        .get()?.id,
+    )
+    const advisory = applyReviewDecision(
+      db,
+      advisoryId,
+    )
+    expect(advisory.applied).toBe(false)
+    expect(advisory.next).toContain('advisory review')
+    expect(db.prepare('SELECT state FROM openclaw_decisions WHERE id = ?').get(advisoryId)?.state).toBe('needs_review')
+  })
+
   it('generates forecasts and vendor-grouped order recommendations', () => {
     seedDemoData(db, asOf)
     ingestToastSales(db, [
@@ -184,5 +206,38 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
       first.flatMap((group) => group.items).map((item) => item.recommendationId),
     )
     expect(secondCount).toBe(firstCount)
+  })
+
+  it('dismisses stale open order recommendations when inventory is replenished', () => {
+    seedDemoData(db, asOf)
+    generateVendorGroupedOrderRecommendations(db, { asOf, horizonDays: 7, usageWindowDays: 7 })
+
+    ingestInvoices(db, [
+      {
+        vendor: 'Downtown Bakery',
+        invoiceNumber: 'RESTOCK-BUNS',
+        invoiceDate: '2026-05-11T13:00:00.000Z',
+        sku: 'Burger Bun',
+        quantity: 1000,
+        unit: 'each',
+        unitCost: 0.5,
+      },
+    ])
+    generateVendorGroupedOrderRecommendations(db, {
+      asOf: '2026-05-11T14:00:00.000Z',
+      horizonDays: 7,
+      usageWindowDays: 7,
+    })
+
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM order_recommendations o
+           JOIN skus s ON s.id = o.sku_id
+           WHERE s.name = 'Burger Bun' AND o.status = 'open'`,
+        )
+        .get()?.count,
+    ).toBe(0)
   })
 })

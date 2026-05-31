@@ -11,6 +11,7 @@ export const openDatabase = (path = ':memory:'): Db => {
   db.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
   `)
   return db
 }

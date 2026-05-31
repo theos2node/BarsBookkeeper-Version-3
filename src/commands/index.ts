@@ -1,6 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
+import { backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -59,6 +60,24 @@ export const createCommands = (
     usage: 'bbk brain run',
     summary: 'Run the inventory reasoning pass.',
     handler: brainRun,
+  },
+  {
+    path: ['backbone', 'run'],
+    usage: 'bbk backbone run [--as-of <iso>] [--horizon-days <days>]',
+    summary: 'Run the continuously learned inventory prediction model.',
+    handler: backboneRun,
+  },
+  {
+    path: ['backbone', 'status'],
+    usage: 'bbk backbone status',
+    summary: 'Show the latest Backbone prediction run.',
+    handler: backboneStatus,
+  },
+  {
+    path: ['backbone', 'simulate'],
+    usage: 'bbk backbone simulate [--env <name>] [--days <days>]',
+    summary: 'Create an isolated sandbox and test Backbone prediction accuracy.',
+    handler: backboneSimulate,
   },
   {
     path: ['forecast', 'run'],

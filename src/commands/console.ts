@@ -97,7 +97,15 @@ const renderSnapshot = async (context: CommandContext) => {
         `SELECT id, state, risk_level AS risk, title, confidence, created_at
          FROM openclaw_decisions
          WHERE state = 'needs_review'
-         ORDER BY created_at DESC
+         ORDER BY
+           CASE risk_level
+             WHEN 'critical' THEN 0
+             WHEN 'high' THEN 1
+             WHEN 'medium' THEN 2
+             WHEN 'low' THEN 3
+             ELSE 4
+           END,
+           created_at DESC
          LIMIT 8`,
       )
       .all()

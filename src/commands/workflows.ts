@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { parseJson, toNumber, toStringValue } from '../db/database.js'
 import { OperatorInputError, runServiceCommand, requirePathArg } from './service-command.js'
 import { BackendUnavailableError, callBackend, withBackendDb } from './backend.js'
 import type { CommandContext } from './types.js'
@@ -118,7 +119,7 @@ export const review = async (args: string[], context: CommandContext): Promise<v
   await withBackendDb(context.config, async (db: any) => {
     const rows = db
       .prepare(
-        `SELECT id, state, risk_level AS risk, title, confidence, created_at
+        `SELECT id, state, risk_level AS risk, title, confidence, payload_json, created_at
          FROM openclaw_decisions
          WHERE state = 'needs_review'
          ORDER BY
@@ -146,6 +147,7 @@ export const review = async (args: string[], context: CommandContext): Promise<v
         id: row.id,
         risk: row.risk,
         confidence: row.confidence,
+        action: reviewActionHint(row),
         created: row.created_at,
         task: row.title,
       })),
@@ -170,7 +172,12 @@ const reviewAction = async (
         ? ['dismissReviewDecision']
         : ['reverseAppliedDecision']
   const call = await callBackend(['../brain/review.js', '../brain/index.js'], exports, [context.config, decisionId, reason])
-  context.terminal.success(`Review ${action} completed.`)
+  const result = call.result as { applied?: boolean } | undefined
+  if (action === 'apply' && result?.applied === false) {
+    context.terminal.warn('Review apply skipped.')
+  } else {
+    context.terminal.success(`Review ${action} completed.`)
+  }
   context.terminal.subtitle(`backend: ${call.module} -> ${call.exportName}`)
   context.terminal.dump(call.result)
 }
@@ -192,8 +199,22 @@ const renderReviewRows = (result: unknown, context: CommandContext): void => {
       id: row.id,
       risk: row.risk_level ?? row.risk,
       confidence: row.confidence,
+      action: reviewActionHint(row),
       created: row.created_at,
       task: row.title,
     })),
   )
+}
+
+const reviewActionHint = (row: Record<string, unknown>): string => {
+  const payload = parseJson<Record<string, unknown>>(row.payload_json, {})
+  if (toStringValue(payload.eventType) && toStringValue(payload.skuName) && toNumber(payload.quantity) !== 0) {
+    return 'apply/dismiss'
+  }
+
+  const kind = toStringValue(payload.kind)
+  if (kind === 'missing_recipe' || kind === 'missing_recipe_review') return 'map recipe, then dismiss'
+  if (kind === 'source_freshness_review') return 'refresh, then dismiss'
+  if (kind === 'inventory_risk_review') return 'resolve, then dismiss'
+  return 'dismiss'
 }
