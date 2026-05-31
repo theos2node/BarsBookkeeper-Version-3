@@ -31,6 +31,37 @@ describe('Backbone prediction model', () => {
     expect(getLatestBackboneRun(db)?.predictionCount).toBeGreaterThanOrEqual(3)
   })
 
+  it('persists uncertainty bands and stockout probability with each prediction', () => {
+    const result = runBackboneAccuracySimulation(db, { scenario: 'surge' })
+    const rows = db
+      .prepare(
+        `SELECT predicted_on_hand,
+                predicted_lower_on_hand,
+                predicted_upper_on_hand,
+                stockout_probability,
+                evidence_json
+         FROM backbone_predictions
+         WHERE run_id = ?`,
+      )
+      .all(result.run.runId)
+
+    expect(rows.length).toBeGreaterThanOrEqual(3)
+    for (const row of rows as any[]) {
+      expect(row.predicted_lower_on_hand).toBeLessThanOrEqual(row.predicted_on_hand)
+      expect(row.predicted_upper_on_hand).toBeGreaterThanOrEqual(row.predicted_on_hand)
+      expect(row.stockout_probability).toBeGreaterThanOrEqual(0)
+      expect(row.stockout_probability).toBeLessThanOrEqual(0.98)
+      expect(JSON.parse(String(row.evidence_json)).uncertainty).toBeGreaterThan(0)
+    }
+
+    const latest = getLatestBackboneRun(db)
+    expect(latest?.predictions.every((prediction) =>
+      prediction.predictedLowerOnHand <= prediction.predictedOnHand &&
+      prediction.predictedUpperOnHand >= prediction.predictedOnHand &&
+      prediction.stockoutProbability >= 0,
+    )).toBe(true)
+  })
+
   it('passes the isolated scenario matrix across different operating patterns', () => {
     for (const scenario of backboneSimulationScenarios) {
       const scenarioDb = openDatabase(':memory:')

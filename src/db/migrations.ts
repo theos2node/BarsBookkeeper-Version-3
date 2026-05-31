@@ -375,6 +375,15 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_backbone_maintenance_runs_status ON backbone_maintenance_runs(status);
     `,
   },
+  {
+    id: 9,
+    name: 'backbone_prediction_uncertainty',
+    sql: `
+      ALTER TABLE backbone_predictions ADD COLUMN predicted_lower_on_hand REAL;
+      ALTER TABLE backbone_predictions ADD COLUMN predicted_upper_on_hand REAL;
+      ALTER TABLE backbone_predictions ADD COLUMN stockout_probability REAL;
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

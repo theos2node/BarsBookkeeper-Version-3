@@ -237,6 +237,7 @@ type PredictionEvidence = {
     priorActiveDays?: number
   }
   projectedUsage?: number
+  uncertainty?: number
   targetAsOf?: string
 }
 
@@ -981,6 +982,8 @@ export const backboneExplain = async (args: string[], context: CommandContext): 
       risk: row.low_stock_risk,
       confidence: row.confidence,
       predictedOnHand: `${row.predicted_on_hand} ${row.unit}`,
+      predictionBand: `${row.predicted_lower_on_hand ?? row.predicted_on_hand}..${row.predicted_upper_on_hand ?? row.predicted_on_hand} ${row.unit}`,
+      stockoutProbability: row.stockout_probability ?? '',
       onHand: `${row.on_hand} ${row.unit}`,
       daysRemaining: row.predicted_days_remaining ?? '',
       costSignal: row.cost_signal,
@@ -992,6 +995,7 @@ export const backboneExplain = async (args: string[], context: CommandContext): 
         method: evidence.projectionMethod ?? 'unknown',
         baselineDailyUsage: evidence.baselineDailyUsage ?? '',
         projectedUsage: evidence.projectedUsage ?? '',
+        uncertainty: evidence.uncertainty ?? '',
         avgDailyUsage: row.avg_daily_usage,
         targetAsOf: evidence.targetAsOf ?? '',
         countAgeDays: evidence.countAgeDays ?? '',
@@ -3389,8 +3393,11 @@ const renderRun = (
     predictions: Array<{
       skuName: string
       predictedOnHand: number
+      predictedLowerOnHand?: number
+      predictedUpperOnHand?: number
       unit: string
       predictedDaysRemaining: number | null
+      stockoutProbability?: number
       lowStockRisk: string
       confidence: number
       recommendedOrderQty: number
@@ -3417,6 +3424,10 @@ const renderRun = (
     result.predictions.slice(0, 10).map((prediction) => ({
       sku: prediction.skuName,
       predicted: `${prediction.predictedOnHand} ${prediction.unit}`,
+      band: prediction.predictedLowerOnHand === undefined || prediction.predictedUpperOnHand === undefined
+        ? ''
+        : `${prediction.predictedLowerOnHand}..${prediction.predictedUpperOnHand}`,
+      stockout: prediction.stockoutProbability ?? '',
       days: prediction.predictedDaysRemaining ?? '',
       risk: prediction.lowStockRisk,
       confidence: prediction.confidence,

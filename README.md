@@ -72,7 +72,7 @@ npm run bbk -- review reverse <decision-id>
 
 ## Backbone
 
-The Backbone model is the terminal-first prediction layer. It listens to the same SQLite event ledger built from Toast sales, invoices, and sparse hand counts, then persists each run in `backbone_runs` and `backbone_predictions`. Later hand counts are scored into `backbone_feedback` and rolled into `backbone_calibrations`, so sparse bottle counts ground the next prediction cycle instead of being treated as one-off corrections.
+The Backbone model is the terminal-first prediction layer. It listens to the same SQLite event ledger built from Toast sales, invoices, and sparse hand counts, then persists each run in `backbone_runs` and `backbone_predictions`. Later hand counts are scored into `backbone_feedback` and rolled into `backbone_calibrations`, so sparse bottle counts ground the next prediction cycle instead of being treated as one-off corrections. Each prediction also carries an uncertainty band and stockout probability so sparse or stale inputs show up as operational risk instead of overconfident point estimates.
 
 ```sh
 npm run bbk -- backbone run --horizon-days 7
@@ -119,7 +119,7 @@ When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu ite
 
 `bbk backbone drift` is the learning health check. It reports feedback sample count, overall bottle error, directional bias in bottle units, feedback freshness, recent-vs-prior error movement, and the SKU drift watchlist. Add `--env <name>` for sandboxed simulations and tighten gates with `--max-bottle-mae`, `--max-bias-bottles`, or `--max-feedback-age-days`.
 
-`bbk backbone explain` opens the evidence behind a prediction: projection method, count age, vendor costs, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
+`bbk backbone explain` opens the evidence behind a prediction: projection method, count age, uncertainty band, stockout probability, vendor costs, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
 
 For continuous terminal operation, run the listener. It attempts a Toast pull every cycle, runs OpenClaw review generation, and refreshes Backbone predictions. Temporary Toast failures are reported as warnings without stopping local prediction runs.
 

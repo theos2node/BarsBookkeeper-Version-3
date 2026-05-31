@@ -19,7 +19,10 @@ export type BackbonePrediction = {
   unit: string
   onHand: number
   predictedOnHand: number
+  predictedLowerOnHand: number
+  predictedUpperOnHand: number
   predictedDaysRemaining: number | null
+  stockoutProbability: number
   avgDailyUsage: number
   confidence: number
   lowStockRisk: 'ok' | 'watch' | 'low' | 'high' | 'critical'
@@ -445,17 +448,52 @@ const projectedUsageForHorizon = (input: {
 
 const riskFor = (input: {
   predictedOnHand: number
+  predictedLowerOnHand?: number
+  stockoutProbability?: number
   avgDailyUsage: number
   parLevel: number | null
   leadTimeDays: number
 }): BackbonePrediction['lowStockRisk'] => {
   const daysRemaining = input.avgDailyUsage > 0 ? input.predictedOnHand / input.avgDailyUsage : null
   if (input.predictedOnHand <= 0) return 'critical'
+  if ((input.stockoutProbability ?? 0) >= 0.75) return 'critical'
+  if ((input.stockoutProbability ?? 0) >= 0.45) return 'high'
   if (daysRemaining !== null && daysRemaining <= Math.max(1, input.leadTimeDays)) return 'high'
+  if (input.predictedLowerOnHand !== undefined && input.predictedLowerOnHand <= 0) return 'low'
   if (input.parLevel !== null && input.predictedOnHand < input.parLevel * 0.5) return 'high'
   if (daysRemaining !== null && daysRemaining < 5) return 'low'
   if (input.parLevel !== null && input.predictedOnHand < input.parLevel) return 'watch'
   return 'ok'
+}
+
+const predictionUncertainty = (input: {
+  avgDailyUsage: number
+  horizonDays: number
+  confidence: number
+  countAgeDays: number | null
+  calibration: Calibration
+  trendMultiplier: number
+  shrinkDaily: number
+  bottleSize: number
+}): number => {
+  const horizonUsage = input.avgDailyUsage * input.horizonDays
+  const demand = horizonUsage * Math.max(0.05, 1 - input.confidence) * 1.2
+  const countAge = input.countAgeDays === null
+    ? input.bottleSize * 0.5
+    : Math.min(input.bottleSize * 0.5, input.bottleSize * (input.countAgeDays / 180))
+  const calibration = input.calibration.sampleCount > 0
+    ? input.bottleSize * input.calibration.meanBottleError
+    : input.bottleSize * 0.1
+  const trend = horizonUsage * Math.min(0.4, Math.abs(input.trendMultiplier - 1) * 0.2)
+  const shrink = input.shrinkDaily * input.horizonDays * 0.5
+  const minimum = input.bottleSize * 0.05
+  return round(Math.max(minimum, demand + countAge + calibration + trend + shrink), 3)
+}
+
+const stockoutProbabilityFor = (predictedOnHand: number, uncertainty: number): number => {
+  if (predictedOnHand <= 0) return 0.98
+  if (uncertainty <= 0 || predictedOnHand >= uncertainty) return 0.01
+  return round(Math.max(0.01, Math.min(0.98, (uncertainty - predictedOnHand) / (2 * uncertainty))), 3)
 }
 
 const recommendationFor = (db: Db, skuId: number): { quantity: number; estimatedCost: number | null } => {
@@ -547,8 +585,23 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
           Math.max(0.25, Math.min(0.98, Math.min(position.confidence, toNumber(forecast?.confidence, position.confidence)) - confidencePenalty + calibration.confidenceAdjustment)),
           2,
         )
+        const uncertainty = predictionUncertainty({
+          avgDailyUsage,
+          horizonDays: resolved.horizonDays,
+          confidence,
+          countAgeDays: countAge,
+          calibration,
+          trendMultiplier: projectedUsage.trend.multiplier,
+          shrinkDaily,
+          bottleSize: bottleSize(db, position.skuId),
+        })
+        const predictedLowerOnHand = round(predictedOnHand - uncertainty, 2)
+        const predictedUpperOnHand = round(predictedOnHand + uncertainty, 2)
+        const stockoutProbability = stockoutProbabilityFor(predictedOnHand, uncertainty)
         const risk = riskFor({
           predictedOnHand,
+          predictedLowerOnHand,
+          stockoutProbability,
           avgDailyUsage,
           parLevel: position.parLevel,
           leadTimeDays: leadTime,
@@ -561,7 +614,10 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
           unit: position.unit,
           onHand: round(position.onHand, 2),
           predictedOnHand,
+          predictedLowerOnHand,
+          predictedUpperOnHand,
           predictedDaysRemaining,
+          stockoutProbability,
           avgDailyUsage: round(avgDailyUsage, 3),
           confidence,
           lowStockRisk: risk,
@@ -572,9 +628,10 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         }
         db.prepare(
           `INSERT INTO backbone_predictions
-           (run_id, sku_id, sku_name, unit, on_hand, predicted_on_hand, predicted_days_remaining,
-            avg_daily_usage, confidence, low_stock_risk, recommended_order_qty, estimated_cost, cost_signal, evidence_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (run_id, sku_id, sku_name, unit, on_hand, predicted_on_hand, predicted_lower_on_hand,
+            predicted_upper_on_hand, predicted_days_remaining, stockout_probability, avg_daily_usage,
+            confidence, low_stock_risk, recommended_order_qty, estimated_cost, cost_signal, evidence_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           runId,
           prediction.skuId,
@@ -582,7 +639,10 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
           prediction.unit,
           prediction.onHand,
           prediction.predictedOnHand,
+          prediction.predictedLowerOnHand,
+          prediction.predictedUpperOnHand,
           prediction.predictedDaysRemaining,
+          prediction.stockoutProbability,
           prediction.avgDailyUsage,
           prediction.confidence,
           prediction.lowStockRisk,
@@ -601,6 +661,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
             projectionMethod: projectedUsage.method,
             trend: projectedUsage.trend,
             projectedUsage: projectedUsage.totalUsage,
+            uncertainty,
             targetAsOf: targetAsOf(resolved.asOf, resolved.horizonDays),
           }),
         )
@@ -670,7 +731,14 @@ export const getLatestBackboneRun = (db: Db): BackboneRunResult | null => {
       unit: toStringValue(row.unit),
       onHand: toNumber(row.on_hand),
       predictedOnHand: toNumber(row.predicted_on_hand),
+      predictedLowerOnHand: row.predicted_lower_on_hand === null || row.predicted_lower_on_hand === undefined
+        ? toNumber(row.predicted_on_hand)
+        : toNumber(row.predicted_lower_on_hand),
+      predictedUpperOnHand: row.predicted_upper_on_hand === null || row.predicted_upper_on_hand === undefined
+        ? toNumber(row.predicted_on_hand)
+        : toNumber(row.predicted_upper_on_hand),
       predictedDaysRemaining: row.predicted_days_remaining === null ? null : toNumber(row.predicted_days_remaining),
+      stockoutProbability: row.stockout_probability === null || row.stockout_probability === undefined ? 0 : toNumber(row.stockout_probability),
       avgDailyUsage: toNumber(row.avg_daily_usage),
       confidence: toNumber(row.confidence),
       lowStockRisk: toStringValue(row.low_stock_risk, 'ok') as BackbonePrediction['lowStockRisk'],
