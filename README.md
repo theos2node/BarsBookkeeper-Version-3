@@ -76,9 +76,10 @@ For continuous terminal operation, run the listener. It attempts a Toast pull ev
 npm run bbk -- backbone listen
 npm run bbk -- backbone listen --cycles 3 --interval-ms 1000
 npm run bbk -- backbone listen --toast-file ./samples/toast-orders.json --cycles 1
+npm run bbk -- backbone listen --skip-openclaw --cycles 1
 ```
 
-Every listener cycle is written to `backbone_listener_cycles`, including Toast status, OpenClaw review count, Backbone run ID, prediction count, low-stock count, feedback count, and any failure message. `bbk backbone status` includes the latest listener health rows so restart/debug state is available from the terminal.
+Every listener cycle is written to `backbone_listener_cycles`, including Toast status, OpenClaw review count, Backbone run ID, prediction count, low-stock count, feedback count, and any failure message. OpenClaw review failures are journaled as warnings without stopping the Backbone model run, so prediction refreshes can continue even when the review layer is degraded. `bbk backbone status` includes the latest listener health rows so restart/debug state is available from the terminal.
 
 Successful listener pulls with a known time window update `backbone_toast_cursor`, allowing API polling to resume from the last successful Toast window instead of repeatedly asking for the same default range.
 

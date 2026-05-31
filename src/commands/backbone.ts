@@ -26,6 +26,8 @@ type ParsedOptions = {
   toastStart?: string
   toastEnd?: string
   skipToast?: boolean
+  skipOpenClaw?: boolean
+  simulateOpenClawFailure?: boolean
   scenario?: BackboneSimulationScenario
   maxAgeMinutes?: number
   cursorLookbackMinutes?: number
@@ -41,6 +43,13 @@ type ToastWindow = {
   start?: string
   end?: string
   explicit: boolean
+}
+
+type OpenClawCycleResult = {
+  ok: boolean
+  reviewItems: number
+  summary: string
+  error?: string
 }
 
 export const backboneRun = async (args: string[], context: CommandContext): Promise<void> => {
@@ -221,7 +230,7 @@ export const backboneListen = async (args: string[], context: CommandContext): P
       const cycleId = startListenerCycle(db, cycleStarted)
       const toast = await tryPullToast(db, context, options)
       try {
-        const openClaw = await runOpenClawBrain(db, context.config)
+        const openClaw = await tryRunOpenClaw(db, context, options)
         const backbone = runBackboneModel(db, {
           asOf: options.asOf,
           horizonDays: options.horizonDays,
@@ -238,6 +247,7 @@ export const backboneListen = async (args: string[], context: CommandContext): P
           feedbackItems: backbone.feedbackItems,
           calibratedSkus: backbone.calibratedSkus,
           costCuttingOptions: backbone.costCuttingOptions,
+          errorMessage: openClaw.ok ? undefined : `openclaw:${openClaw.error}`,
         })
 
         context.terminal.table([
@@ -246,6 +256,7 @@ export const backboneListen = async (args: string[], context: CommandContext): P
             journal: cycleId,
             started: cycleStarted,
             toast: toast.summary,
+            openClaw: openClaw.summary,
             reviewItems: openClaw.reviewItems,
             runId: backbone.runId,
             predictions: backbone.predictionCount,
@@ -531,6 +542,26 @@ const tryPullToast = async (
   }
 }
 
+const tryRunOpenClaw = async (
+  db: any,
+  context: CommandContext,
+  options: ParsedOptions,
+): Promise<OpenClawCycleResult> => {
+  if (options.skipOpenClaw) {
+    return { ok: true, reviewItems: 0, summary: 'skipped' }
+  }
+
+  try {
+    if (options.simulateOpenClawFailure) throw new Error('simulated_openclaw_failure')
+    const result = await runOpenClawBrain(db, context.config)
+    return { ok: true, reviewItems: result.reviewItems, summary: 'ok' }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    context.terminal.warn(`OpenClaw skipped this cycle: ${message}`)
+    return { ok: false, reviewItems: 0, summary: `warn:${message}`, error: message }
+  }
+}
+
 const resolveToastWindow = (db: any, options: ParsedOptions): ToastWindow => {
   if (options.toastStart || options.toastEnd) {
     return {
@@ -763,6 +794,10 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--skip-toast' || arg === '--no-toast') {
       parsed.skipToast = true
+    } else if (arg === '--skip-openclaw' || arg === '--no-openclaw') {
+      parsed.skipOpenClaw = true
+    } else if (arg === '--simulate-openclaw-failure') {
+      parsed.simulateOpenClawFailure = true
     } else if (arg === '--scenario' && next) {
       parsed.scenario = parseScenario(next)
       index += 1

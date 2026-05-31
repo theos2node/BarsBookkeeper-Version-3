@@ -124,6 +124,19 @@ process.exit(1)
       ],
       dataDir,
     )
+    const resilientListenOutput = await expectCliOk(
+      [
+        'backbone',
+        'listen',
+        '--cycles',
+        '1',
+        '--interval-ms',
+        '0',
+        '--skip-toast',
+        '--simulate-openclaw-failure',
+      ],
+      dataDir,
+    )
     const backboneSimulation = await expectCliOk(['backbone', 'simulate', '--env', 'smoke', '--days', '30'], dataDir)
     const backboneMatrix = await expectCliOk(['backbone', 'matrix', '--env', 'smoke-matrix', '--days', '30'], dataDir)
     await expectCliOk(['forecast', 'run'], dataDir)
@@ -141,6 +154,8 @@ process.exit(1)
     expect(initialDoctor).toContain('no completed Backbone run yet')
     expect(listenOutput).toContain('Backbone listener stopped after 2 cycles')
     expect(listenOutput).toContain('file:')
+    expect(resilientListenOutput).toContain('OpenClaw skipped this cycle: simulated_openclaw_failure')
+    expect(resilientListenOutput).toContain('Backbone listener stopped after 1 cycle')
     expect(backboneSimulation).toContain('bottleMae')
     expect(backboneSimulation).toContain('lowStockRecall')
     expect(backboneMatrix).toContain('Backbone scenario matrix passed 5/5 scenarios')
@@ -170,8 +185,11 @@ process.exit(1)
     expect(
       scalar(db, "SELECT COUNT(*) AS value FROM evidence_items WHERE evidence_type = 'toast_missing_recipe'"),
     ).toBe(1)
-    expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_listener_cycles')).toBe(2)
-    expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'completed'")).toBe(2)
+    expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_listener_cycles')).toBe(3)
+    expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'completed'")).toBe(3)
+    expect(
+      scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE error_message LIKE 'openclaw:%'"),
+    ).toBe(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_toast_cursor WHERE last_end = '2026-05-11T00:00:00.000Z'")).toBe(1)
 
     await expectCliOk(['setup'], dataDir)

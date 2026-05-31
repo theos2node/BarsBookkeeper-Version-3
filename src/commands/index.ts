@@ -93,7 +93,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'listen'],
-    usage: 'bbk backbone listen [--cycles <n>] [--interval-ms <ms>]',
+    usage: 'bbk backbone listen [--cycles <n>] [--interval-ms <ms>] [--skip-openclaw]',
     summary: 'Continuously pull Toast, run OpenClaw, and refresh Backbone predictions.',
     handler: backboneListen,
   },
