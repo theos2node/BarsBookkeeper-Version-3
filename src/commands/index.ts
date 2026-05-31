@@ -135,13 +135,13 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'verify'],
-    usage: 'bbk backbone verify [--env <prefix>] [--scenario steady|busy|slow|shrink|volatile|price-drift] [--days <days>]',
+    usage: 'bbk backbone verify [--env <prefix>] [--scenario steady|busy|slow|shrink|volatile|price-drift|surge] [--days <days>]',
     summary: 'Run isolated Backbone validation and rolling backtest gates as one acceptance check.',
     handler: backboneVerify,
   },
   {
     path: ['backbone', 'acceptance'],
-    usage: 'bbk backbone acceptance [--env <prefix>] [--scenario steady|busy|slow|shrink|volatile|price-drift] [--days <days>]',
+    usage: 'bbk backbone acceptance [--env <prefix>] [--scenario steady|busy|slow|shrink|volatile|price-drift|surge] [--days <days>]',
     summary: 'Run the full Backbone acceptance drill: isolated predictions, rolling sparse-count backtest, drift, and snapshot restore.',
     handler: backboneAcceptance,
   },
@@ -213,13 +213,13 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'simulate'],
-    usage: 'bbk backbone simulate [--env <name>] [--days <days>] [--scenario steady|busy|slow|shrink|volatile|price-drift]',
+    usage: 'bbk backbone simulate [--env <name>] [--days <days>] [--scenario steady|busy|slow|shrink|volatile|price-drift|surge]',
     summary: 'Create an isolated sandbox and test Backbone prediction accuracy.',
     handler: backboneSimulate,
   },
   {
     path: ['backbone', 'backtest'],
-    usage: 'bbk backbone backtest [--env <name>] [--days <days>] [--horizon-days <days>] [--count-cadence-days <days>] [--scenario steady|busy|slow|shrink|volatile|price-drift]',
+    usage: 'bbk backbone backtest [--env <name>] [--days <days>] [--horizon-days <days>] [--count-cadence-days <days>] [--scenario steady|busy|slow|shrink|volatile|price-drift|surge]',
     summary: 'Walk a simulated Toast timeline and verify rolling Backbone accuracy between sparse counts.',
     handler: backboneBacktest,
   },

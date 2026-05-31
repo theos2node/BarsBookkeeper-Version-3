@@ -228,6 +228,13 @@ type PredictionEvidence = {
   }
   baselineDailyUsage?: number
   projectionMethod?: string
+  trend?: {
+    recentDailyUsage?: number
+    priorDailyUsage?: number
+    multiplier?: number
+    recentActiveDays?: number
+    priorActiveDays?: number
+  }
   projectedUsage?: number
   targetAsOf?: string
 }
@@ -961,6 +968,9 @@ export const backboneExplain = async (args: string[], context: CommandContext): 
         avgDailyUsage: row.avg_daily_usage,
         targetAsOf: evidence.targetAsOf ?? '',
         countAgeDays: evidence.countAgeDays ?? '',
+        trendMultiplier: evidence.trend?.multiplier ?? '',
+        recentDailyUsage: evidence.trend?.recentDailyUsage ?? '',
+        priorDailyUsage: evidence.trend?.priorDailyUsage ?? '',
         sourceWarning: evidence.positionWarningState ?? '',
       },
     ])

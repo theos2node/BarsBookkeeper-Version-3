@@ -351,6 +351,63 @@ const weekdayUsageAverages = (db: Db, skuId: number, asOf: string, windowDays: n
   return new Map(rows.map((row) => [toNumber(row.weekday), toNumber(row.avg_used)]))
 }
 
+type UsageTrend = {
+  recentDailyUsage: number
+  priorDailyUsage: number
+  multiplier: number
+  recentActiveDays: number
+  priorActiveDays: number
+}
+
+type ProjectionMethod = 'weekday' | 'average' | 'trend-weekday' | 'trend-average'
+
+const usageTrend = (db: Db, skuId: number, asOf: string): UsageTrend => {
+  const asOfDate = new Date(asOf)
+  const recentStart = new Date(asOfDate.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const priorStart = new Date(asOfDate.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString()
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(CASE WHEN occurred_at > ? THEN ABS(quantity) ELSE 0 END), 0) AS recent_used,
+              COALESCE(SUM(CASE WHEN occurred_at > ? AND occurred_at <= ? THEN ABS(quantity) ELSE 0 END), 0) AS prior_used,
+              COUNT(DISTINCT CASE WHEN occurred_at > ? THEN substr(occurred_at, 1, 10) END) AS recent_active_days,
+              COUNT(DISTINCT CASE WHEN occurred_at > ? AND occurred_at <= ? THEN substr(occurred_at, 1, 10) END) AS prior_active_days
+       FROM inventory_events
+       WHERE sku_id = ?
+         AND event_type = 'sale'
+         AND quantity < 0
+         AND occurred_at > ?
+         AND occurred_at <= ?`,
+    )
+    .get(recentStart, priorStart, recentStart, recentStart, priorStart, recentStart, skuId, priorStart, asOf)
+
+  const recentDailyUsage = toNumber(row?.recent_used) / 7
+  const priorDailyUsage = toNumber(row?.prior_used) / 21
+  const recentActiveDays = toNumber(row?.recent_active_days)
+  const priorActiveDays = toNumber(row?.prior_active_days)
+  const hasEnoughSignal = recentActiveDays >= 3 && priorActiveDays >= 7 && priorDailyUsage > 0
+  if (!hasEnoughSignal) {
+    return {
+      recentDailyUsage: round(recentDailyUsage, 3),
+      priorDailyUsage: round(priorDailyUsage, 3),
+      multiplier: 1,
+      recentActiveDays,
+      priorActiveDays,
+    }
+  }
+
+  const rawMultiplier = recentDailyUsage / priorDailyUsage
+  const multiplier = Math.abs(rawMultiplier - 1) >= 0.15
+    ? Math.max(0.6, Math.min(2, rawMultiplier))
+    : 1
+  return {
+    recentDailyUsage: round(recentDailyUsage, 3),
+    priorDailyUsage: round(priorDailyUsage, 3),
+    multiplier: round(multiplier, 3),
+    recentActiveDays,
+    priorActiveDays,
+  }
+}
+
 const projectedUsageForHorizon = (input: {
   db: Db
   skuId: number
@@ -358,13 +415,16 @@ const projectedUsageForHorizon = (input: {
   horizonDays: number
   usageWindowDays: number
   fallbackDailyUsage: number
-}): { totalUsage: number; dailyUsage: number; method: 'weekday' | 'average' } => {
+}): { totalUsage: number; dailyUsage: number; method: ProjectionMethod; trend: UsageTrend } => {
+  const trend = usageTrend(input.db, input.skuId, input.asOf)
   const weekdayAverages = weekdayUsageAverages(input.db, input.skuId, input.asOf, input.usageWindowDays)
   if (weekdayAverages.size === 0) {
+    const dailyUsage = input.fallbackDailyUsage * trend.multiplier
     return {
-      totalUsage: input.fallbackDailyUsage * input.horizonDays,
-      dailyUsage: input.fallbackDailyUsage,
-      method: 'average',
+      totalUsage: round(dailyUsage * input.horizonDays, 3),
+      dailyUsage: round(dailyUsage, 3),
+      method: trend.multiplier === 1 ? 'average' : 'trend-average',
+      trend,
     }
   }
 
@@ -372,13 +432,14 @@ const projectedUsageForHorizon = (input: {
   const cursor = new Date(input.asOf)
   for (let day = 1; day <= input.horizonDays; day += 1) {
     cursor.setUTCDate(cursor.getUTCDate() + 1)
-    totalUsage += weekdayAverages.get(cursor.getUTCDay()) ?? input.fallbackDailyUsage
+    totalUsage += (weekdayAverages.get(cursor.getUTCDay()) ?? input.fallbackDailyUsage) * trend.multiplier
   }
 
   return {
     totalUsage: round(totalUsage, 3),
     dailyUsage: round(totalUsage / Math.max(1, input.horizonDays), 3),
-    method: 'weekday',
+    method: trend.multiplier === 1 ? 'weekday' : 'trend-weekday',
+    trend,
   }
 }
 
@@ -538,6 +599,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
             calibration,
             baselineDailyUsage: round(baselineDailyUsage, 3),
             projectionMethod: projectedUsage.method,
+            trend: projectedUsage.trend,
             projectedUsage: projectedUsage.totalUsage,
             targetAsOf: targetAsOf(resolved.asOf, resolved.horizonDays),
           }),

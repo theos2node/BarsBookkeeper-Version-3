@@ -66,6 +66,25 @@ describe('Backbone prediction model', () => {
     expect(projectionMethods).toContain('weekday')
   })
 
+  it('adapts to recent Toast demand surges without waiting for another hand count', () => {
+    const result = runBackboneAccuracySimulation(db, { scenario: 'surge' })
+    const projectionEvidence = db
+      .prepare(
+        `SELECT evidence_json
+         FROM backbone_predictions
+         WHERE run_id = ?`,
+      )
+      .all(result.run.runId)
+      .map((row: any) => JSON.parse(String(row.evidence_json)))
+
+    expect(result.passed).toBe(true)
+    expect(result.bottleMae).toBeLessThanOrEqual(0.1)
+    expect(result.maxBottleError).toBeLessThanOrEqual(0.25)
+    expect(result.lowStockRecall).toBe(1)
+    expect(projectionEvidence.some((evidence) => evidence.projectionMethod === 'trend-weekday')).toBe(true)
+    expect(projectionEvidence.some((evidence) => evidence.trend?.multiplier > 1.2)).toBe(true)
+  })
+
   it('flags hidden shrink from sparse counts as an audit cost signal', () => {
     const result = runBackboneAccuracySimulation(db, { scenario: 'shrink' })
 

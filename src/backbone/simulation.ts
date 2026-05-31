@@ -19,9 +19,9 @@ export type BackboneRollingBacktestOptions = {
   warmupDays?: number
 }
 
-export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow' | 'shrink' | 'volatile' | 'price-drift'
+export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow' | 'shrink' | 'volatile' | 'price-drift' | 'surge'
 
-export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow', 'shrink', 'volatile', 'price-drift']
+export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow', 'shrink', 'volatile', 'price-drift', 'surge']
 
 export type BackboneSimulationResult = {
   scenario: BackboneSimulationScenario
@@ -98,6 +98,10 @@ type ScenarioProfile = {
     quantity: number
     unitCost: number
   }
+  demandShift?: {
+    day: number
+    multiplier: number
+  }
 }
 
 const dayMs = 24 * 60 * 60 * 1000
@@ -166,6 +170,16 @@ const profiles: Record<BackboneSimulationScenario, ScenarioProfile> = {
       unitCost: 0.028,
     },
   },
+  surge: {
+    name: 'surge',
+    vodkaSales: 5,
+    margaritaSales: 6,
+    initial: { vodka: 18000, tequila: 20000, tripleSec: 8000 },
+    demandShift: {
+      day: 22,
+      multiplier: 2,
+    },
+  },
 }
 
 const isoDay = (start: Date, day: number, hour: number): string => {
@@ -181,7 +195,9 @@ const highRisk = (prediction: BackbonePrediction): boolean =>
 
 const salesForDay = (start: Date, day: number, profile: ScenarioProfile): { vodkaSales: number; margaritaSales: number } => {
   const weekday = new Date(start.getTime() + day * dayMs).getUTCDay()
-  const multiplier = profile.weekdayMultipliers?.[weekday] ?? 1
+  const weekdayMultiplier = profile.weekdayMultipliers?.[weekday] ?? 1
+  const shiftMultiplier = profile.demandShift && day >= profile.demandShift.day ? profile.demandShift.multiplier : 1
+  const multiplier = weekdayMultiplier * shiftMultiplier
   return {
     vodkaSales: Math.round(profile.vodkaSales * multiplier),
     margaritaSales: Math.round(profile.margaritaSales * multiplier),
