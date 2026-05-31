@@ -10,6 +10,8 @@ Run the local CLI through npm while developing:
 npm run bbk -- doctor
 ```
 
+`bbk doctor` checks local paths, Codex availability, configured model smoke checks, and Backbone readiness. On a fresh install, missing Backbone runs or listener cycles are warnings with the next command to run, not hard failures.
+
 The package also exposes a `bbk` binary after build/install:
 
 ```sh

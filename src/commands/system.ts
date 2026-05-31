@@ -59,12 +59,64 @@ export const doctor = async (_args: string[], context: CommandContext): Promise<
   terminal.section('Codex')
   await checkCodex(terminal)
 
+  terminal.section('Backbone')
+  await checkBackbone(config, terminal)
+
   terminal.section('Model smoke')
   if (process.env.BBK_SKIP_MODEL_SMOKE === '1') {
     terminal.status('skip', 'model smoke check skipped', 'BBK_SKIP_MODEL_SMOKE=1')
     return
   }
   await checkModelSmoke(context)
+}
+
+const checkBackbone = async (
+  config: CommandContext['config'],
+  terminal: CommandContext['terminal'],
+): Promise<void> => {
+  try {
+    await withBackendDb(config, async (db: any) => {
+      const latestRun = db
+        .prepare(
+          `SELECT id, as_of
+           FROM backbone_runs
+           WHERE status = 'completed'
+           ORDER BY id DESC
+           LIMIT 1`,
+        )
+        .get()
+      const predictions = toScalar(db, 'SELECT COUNT(*) AS count FROM backbone_predictions')
+      const listenerCycles = toScalar(db, 'SELECT COUNT(*) AS count FROM backbone_listener_cycles')
+      const environments = toScalar(db, 'SELECT COUNT(*) AS count FROM backbone_environments')
+      const cursor = db.prepare('SELECT last_end, last_source FROM backbone_toast_cursor WHERE id = 1').get()
+
+      terminal.status(
+        latestRun ? 'ok' : 'warn',
+        latestRun ? `latest Backbone run: ${latestRun.id}` : 'no completed Backbone run yet',
+        latestRun?.as_of ?? 'run `bbk backbone run` or `bbk backbone listen --once`',
+      )
+      terminal.status(predictions > 0 ? 'ok' : 'warn', `Backbone predictions stored: ${predictions}`)
+      terminal.status(
+        listenerCycles > 0 ? 'ok' : 'warn',
+        `Backbone listener cycles: ${listenerCycles}`,
+        listenerCycles > 0 ? undefined : 'run `bbk backbone listen --once`',
+      )
+      terminal.status(
+        cursor?.last_end ? 'ok' : 'warn',
+        cursor?.last_end ? `Toast cursor: ${cursor.last_end}` : 'Toast cursor not established',
+        cursor?.last_source,
+      )
+      terminal.status('info', `isolated Backbone environments: ${environments}`)
+    })
+  } catch (error) {
+    terminal.status('warn', 'Backbone readiness unavailable', error instanceof Error ? error.message : String(error))
+  }
+}
+
+const toScalar = (db: any, sql: string): number => {
+  const row = db.prepare(sql).get()
+  const value = row?.count ?? row?.value
+  return typeof value === 'number' ? value : Number(value) || 0
 }
 
 const checkPath = async (
