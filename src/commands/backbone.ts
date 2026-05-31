@@ -31,6 +31,7 @@ type ParsedOptions = {
   scenario?: BackboneSimulationScenario
   maxAgeMinutes?: number
   maxRunAgeMinutes?: number
+  recoverStaleMinutes?: number
   cursorLookbackMinutes?: number
   minSamples?: number
 }
@@ -334,6 +335,7 @@ export const backboneListen = async (args: string[], context: CommandContext): P
   const options = parseOptions(args)
   const cycles = options.cycles ?? Number.POSITIVE_INFINITY
   const intervalMs = options.intervalMs ?? 5 * 60 * 1000
+  const recoverStaleMinutes = options.recoverStaleMinutes ?? Math.max(15, Math.ceil((intervalMs * 3) / 60_000))
   let stopped = false
   let completed = 0
 
@@ -353,6 +355,10 @@ export const backboneListen = async (args: string[], context: CommandContext): P
   const db = openDatabase(context.config.dbPath)
   try {
     migrateDatabase(db)
+    const recovered = recoverStaleListenerCycles(db, recoverStaleMinutes)
+    if (recovered > 0) {
+      context.terminal.warn(`Recovered ${recovered} stale Backbone listener cycle${recovered === 1 ? '' : 's'}.`)
+    }
     while (!stopped && completed < cycles) {
       completed += 1
       const cycleStarted = new Date().toISOString()
@@ -770,6 +776,21 @@ const startListenerCycle = (db: any, startedAt: string): number =>
       .run(startedAt).lastInsertRowid,
   )
 
+const recoverStaleListenerCycles = (db: any, maxAgeMinutes: number): number => {
+  const cutoff = new Date(Date.now() - Math.max(0, maxAgeMinutes) * 60_000).toISOString()
+  const result = db
+    .prepare(
+      `UPDATE backbone_listener_cycles
+       SET status = 'failed',
+           completed_at = CURRENT_TIMESTAMP,
+           error_message = COALESCE(error_message, 'recovered stale running cycle on listener startup')
+       WHERE status = 'running'
+         AND started_at < ?`,
+    )
+    .run(cutoff)
+  return toNumber(result.changes)
+}
+
 const finishListenerCycle = (
   db: any,
   cycleId: number,
@@ -966,6 +987,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--max-run-age-minutes' && next) {
       parsed.maxRunAgeMinutes = nonNegativeNumber(next, '--max-run-age-minutes')
+      index += 1
+    } else if (arg === '--recover-stale-minutes' && next) {
+      parsed.recoverStaleMinutes = nonNegativeNumber(next, '--recover-stale-minutes')
       index += 1
     } else if (arg === '--cursor-lookback-minutes' && next) {
       parsed.cursorLookbackMinutes = positiveNumber(next, '--cursor-lookback-minutes')

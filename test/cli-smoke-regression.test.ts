@@ -238,4 +238,33 @@ process.exit(1)
     expect(pull.output).not.toContain('toast_pull_failed')
     expect(pull.output).not.toContain('toast_auth_failed')
   })
+
+  it('recovers abandoned listener journal rows before starting a new Backbone cycle', async () => {
+    await expectCliOk(['setup'], dataDir)
+    await expectCliOk(['seed-demo'], dataDir)
+
+    const recoveryDb = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    recoveryDb
+      .prepare(
+        `INSERT INTO backbone_listener_cycles (started_at, status)
+         VALUES ('2026-05-01T00:00:00.000Z', 'running')`,
+      )
+      .run()
+    recoveryDb.close()
+
+    const output = await expectCliOk(
+      ['backbone', 'listen', '--cycles', '1', '--interval-ms', '0', '--skip-toast', '--skip-openclaw', '--recover-stale-minutes', '0'],
+      dataDir,
+    )
+
+    expect(output).toContain('Recovered 1 stale Backbone listener cycle.')
+    expect(output).toContain('Backbone listener stopped after 1 cycle')
+
+    db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    expect(
+      scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'failed' AND error_message = 'recovered stale running cycle on listener startup'"),
+    ).toBe(1)
+    expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'completed'")).toBe(1)
+    expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runs')).toBe(1)
+  })
 })
