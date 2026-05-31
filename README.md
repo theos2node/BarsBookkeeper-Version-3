@@ -49,6 +49,7 @@ npm run bbk -- brain run
 npm run bbk -- backbone run
 npm run bbk -- backbone listen
 npm run bbk -- backbone service --interval-ms 300000
+npm run bbk -- backbone snapshot --label before-migration
 npm run bbk -- backbone status
 npm run bbk -- backbone verify --env acceptance --days 60
 npm run bbk -- backbone simulate --env test-lab --days 30
@@ -70,6 +71,7 @@ npm run bbk -- backbone run --horizon-days 7
 npm run bbk -- backbone plan --horizons 1,7,14,30
 npm run bbk -- backbone status
 npm run bbk -- backbone service --interval-ms 300000
+npm run bbk -- backbone snapshot --label nightly
 npm run bbk -- backbone actions
 npm run bbk -- backbone intake
 npm run bbk -- backbone accuracy
@@ -118,6 +120,8 @@ Every listener cycle is written to `backbone_listener_cycles`, including Toast s
 Only one listener is allowed to run against a database at a time. `bbk backbone listen` records a heartbeat in `backbone_runtime_locks`, rejects active duplicate listeners, and takes over stale locks after the TTL expires; use `--lock-ttl-minutes` if the listener interval needs a wider recovery window.
 
 Successful listener pulls with a known time window update `backbone_toast_cursor`, allowing API polling to resume from the last successful Toast window instead of repeatedly asking for the same default range.
+
+Use `bbk backbone snapshot --label <name>` before risky changes or as a scheduled maintenance step. It writes a consistent SQLite backup plus a JSON manifest under `data/backups/`, including row counts, latest Backbone run metrics, latest verification summary, and Toast cursor state.
 
 Use `bbk backbone audit` as an operational trust gate. It checks for a recent listener heartbeat, fresh prediction run, listener-to-prediction linkage, sparse count grounding, recent listener failures, prediction coverage, low-stock signals, cost signals, feedback calibration, and Toast cursor state. Hard failures exit non-zero; missing count, cost, calibration, or cursor signals are warnings so a quiet bar day does not block operations. Use `--max-age-minutes` for listener heartbeat freshness, `--max-run-age-minutes` when prediction freshness needs a different threshold, and `--max-count-age-days` for sparse bottle-count cadence.
 

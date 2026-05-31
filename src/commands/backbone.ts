@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
@@ -102,6 +102,15 @@ type ToastIntakeSummary = {
   openMissingRecipeReviews: number
   latestToastDocument: string
   latestSaleEvent: string
+}
+
+type SnapshotManifest = {
+  counts: {
+    backboneRuns: number
+    backbonePredictions: number
+    backboneVerifications: number
+  } & Record<string, number>
+  [key: string]: unknown
 }
 
 type HorizonRun = {
@@ -255,6 +264,46 @@ export const backboneService = async (args: string[], context: CommandContext): 
   context.terminal.line(`launchctl unload "$HOME/Library/LaunchAgents/${label}.plist" 2>/dev/null || true`)
   context.terminal.line(`launchctl load "$HOME/Library/LaunchAgents/${label}.plist"`)
   context.terminal.line(`launchctl start "${label}"`)
+}
+
+export const backboneSnapshot = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const label = cleanEnvName(options.label ?? `backbone-${new Date().toISOString().replace(/[:.]/g, '-')}`)
+  const backupDir = resolve(context.config.dataDir, 'backups')
+  const snapshotPath = resolve(backupDir, `${label}.sqlite`)
+  const manifestPath = resolve(backupDir, `${label}.manifest.json`)
+
+  context.terminal.title('Backbone snapshot')
+  await mkdir(backupDir, { recursive: true })
+  if (existsSync(snapshotPath) || existsSync(manifestPath)) {
+    throw new Error(`backbone_snapshot_exists:${label}`)
+  }
+
+  await withBackendDb(context.config, async (db: any) => {
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    db.exec(`VACUUM INTO '${sqlString(snapshotPath)}'`)
+    const snapshotStat = await stat(snapshotPath)
+    const manifest = buildSnapshotManifest(db, {
+      label,
+      snapshotPath,
+      manifestPath,
+      sizeBytes: snapshotStat.size,
+      dataDir: context.config.dataDir,
+      dbPath: context.config.dbPath,
+    })
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+
+    context.terminal.success(`Snapshot written: ${snapshotPath}`)
+    context.terminal.dump({
+      label,
+      snapshotPath,
+      manifestPath,
+      sizeBytes: snapshotStat.size,
+      backboneRuns: manifest.counts.backboneRuns,
+      predictions: manifest.counts.backbonePredictions,
+      verifications: manifest.counts.backboneVerifications,
+    })
+  })
 }
 
 export const backboneActions = async (_args: string[], context: CommandContext): Promise<void> => {
@@ -686,6 +735,87 @@ const buildHorizonRiskRows = (runs: HorizonRun[]): Array<Record<string, unknown>
     })
     .slice(0, 15)
 }
+
+const buildSnapshotManifest = (
+  db: any,
+  input: {
+    label: string
+    snapshotPath: string
+    manifestPath: string
+    sizeBytes: number
+    dataDir: string
+    dbPath: string
+  },
+): SnapshotManifest => {
+  const latestRun = db
+    .prepare(
+      `SELECT id, as_of, completed_at, metrics_json
+       FROM backbone_runs
+       WHERE status = 'completed'
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .get()
+  const latestVerification = db
+    .prepare(
+      `SELECT id, status, completed_at, summary_json
+       FROM backbone_verifications
+       ORDER BY completed_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get()
+  const cursor = db.prepare('SELECT last_start, last_end, last_source, updated_at FROM backbone_toast_cursor WHERE id = 1').get()
+
+  return {
+    label: input.label,
+    createdAt: new Date().toISOString(),
+    dataDir: input.dataDir,
+    dbPath: input.dbPath,
+    snapshotPath: input.snapshotPath,
+    manifestPath: input.manifestPath,
+    sizeBytes: input.sizeBytes,
+    counts: {
+      sourceDocuments: scalarCount(db, 'source_documents'),
+      inventoryEvents: scalarCount(db, 'inventory_events'),
+      backboneRuns: scalarCount(db, 'backbone_runs'),
+      backbonePredictions: scalarCount(db, 'backbone_predictions'),
+      backboneFeedback: scalarCount(db, 'backbone_feedback'),
+      backboneCalibrations: scalarCount(db, 'backbone_calibrations'),
+      backboneListenerCycles: scalarCount(db, 'backbone_listener_cycles'),
+      backboneVerifications: scalarCount(db, 'backbone_verifications'),
+      openReviewTasks: toNumber(db.prepare("SELECT COUNT(*) AS count FROM openclaw_decisions WHERE state = 'needs_review'").get()?.count),
+    },
+    latestRun: latestRun
+      ? {
+          id: toNumber(latestRun.id),
+          asOf: latestRun.as_of,
+          completedAt: latestRun.completed_at,
+          metrics: parseJson<Record<string, unknown>>(latestRun.metrics_json, {}),
+        }
+      : null,
+    latestVerification: latestVerification
+      ? {
+          id: toNumber(latestVerification.id),
+          status: latestVerification.status,
+          completedAt: latestVerification.completed_at,
+          summary: parseJson<Record<string, unknown>>(latestVerification.summary_json, {}),
+        }
+      : null,
+    toastCursor: cursor
+      ? {
+          lastStart: cursor.last_start,
+          lastEnd: cursor.last_end,
+          source: cursor.last_source,
+          updatedAt: cursor.updated_at,
+        }
+      : null,
+  }
+}
+
+const scalarCount = (db: any, table: string): number =>
+  toNumber(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count)
+
+const sqlString = (value: string): string => value.replace(/'/g, "''")
 
 const renderLaunchdPlist = (input: {
   label: string

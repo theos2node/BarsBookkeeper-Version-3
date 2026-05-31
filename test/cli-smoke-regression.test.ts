@@ -157,6 +157,7 @@ process.exit(1)
     const consoleOutput = await expectCliOk(['console'], dataDir)
     const backboneStatus = await expectCliOk(['backbone', 'status'], dataDir)
     const backboneAudit = await expectCliOk(['backbone', 'audit'], dataDir)
+    const backboneSnapshot = await expectCliOk(['backbone', 'snapshot', '--label', 'smoke-snapshot'], dataDir)
     const backboneActions = await expectCliOk(['backbone', 'actions'], dataDir)
     const backboneEnvs = await expectCliOk(['backbone', 'envs'], dataDir)
 
@@ -224,6 +225,9 @@ process.exit(1)
     expect(backboneAudit).toContain('count grounding')
     expect(backboneAudit).toContain('toast recipe coverage')
     expect(backboneAudit).toContain('listener prediction link')
+    expect(backboneSnapshot).toContain('Backbone snapshot')
+    expect(backboneSnapshot).toContain('smoke-snapshot.sqlite')
+    expect(backboneSnapshot).toContain('smoke-snapshot.manifest.json')
     expect(backboneActions).toContain('Order now')
     expect(backboneActions).toContain('Cost cuts')
     expect(backboneEnvs).toContain('smoke-matrix')
@@ -256,6 +260,19 @@ process.exit(1)
     expect(plist).toContain('<string>listen</string>')
     expect(plist).not.toContain('TOAST_API_KEY')
     expect(plist).not.toContain('TOAST_CLIENT_SECRET')
+    expect(existsSync(join(dataDir, 'backups', 'smoke-snapshot.sqlite'))).toBe(true)
+    const manifest = JSON.parse(await readFile(join(dataDir, 'backups', 'smoke-snapshot.manifest.json'), 'utf8')) as {
+      counts: { backboneRuns: number; backbonePredictions: number; backboneVerifications: number }
+      latestRun: { id: number } | null
+      latestVerification: { status: string } | null
+      toastCursor: { lastEnd?: string } | null
+    }
+    expect(manifest.counts.backboneRuns).toBeGreaterThan(0)
+    expect(manifest.counts.backbonePredictions).toBeGreaterThan(0)
+    expect(manifest.counts.backboneVerifications).toBe(1)
+    expect(manifest.latestRun?.id).toBeGreaterThan(0)
+    expect(manifest.latestVerification?.status).toBe('passed')
+    expect(manifest.toastCursor?.lastEnd).toBe('2026-05-11T00:00:00.000Z')
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_listener_cycles')).toBe(3)
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_verifications')).toBe(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_verifications WHERE status = 'passed'")).toBe(1)

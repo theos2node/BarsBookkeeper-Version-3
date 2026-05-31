@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
+import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -84,6 +84,12 @@ export const createCommands = (
     usage: 'bbk backbone service [--interval-ms <ms>] [--label <launchd-label>]',
     summary: 'Write a macOS launchd plist for an unattended Backbone listener.',
     handler: backboneService,
+  },
+  {
+    path: ['backbone', 'snapshot'],
+    usage: 'bbk backbone snapshot [--label <name>]',
+    summary: 'Create a consistent SQLite backup and Backbone health manifest.',
+    handler: backboneSnapshot,
   },
   {
     path: ['backbone', 'plan'],
