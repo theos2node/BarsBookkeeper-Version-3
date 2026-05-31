@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneSimulate, backboneStatus, backboneVerify } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -90,6 +90,12 @@ export const createCommands = (
     usage: 'bbk backbone audit [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>] [--max-count-age-days <days>]',
     summary: 'Check Backbone listener, prediction, feedback, and signal health.',
     handler: backboneAudit,
+  },
+  {
+    path: ['backbone', 'verify'],
+    usage: 'bbk backbone verify [--env <prefix>] [--scenario steady|busy|slow|shrink|volatile|price-drift] [--days <days>]',
+    summary: 'Run isolated Backbone validation and rolling backtest gates as one acceptance check.',
+    handler: backboneVerify,
   },
   {
     path: ['backbone', 'accuracy'],

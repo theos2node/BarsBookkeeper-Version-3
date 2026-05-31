@@ -1063,7 +1063,7 @@ export const backboneSimulate = async (args: string[], context: CommandContext):
     migrateDatabase(db)
     const result = runBackboneAccuracySimulation(db, {
       startAt: options.asOf,
-      trainingDays: options.trainingDays,
+      trainingDays: options.trainingDays ?? (options.days ? options.days - 1 : undefined),
       scenario: options.scenario,
     })
     context.terminal.status(result.passed ? 'ok' : 'fail', `Simulation ${envName} ${result.passed ? 'passed' : 'failed'}`)
@@ -1227,6 +1227,84 @@ export const backboneBacktestMatrix = async (args: string[], context: CommandCon
   context.terminal.success(`Backbone rolling backtest matrix passed ${results.length}/${results.length} scenarios.`)
 }
 
+export const backboneVerify = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
+  const prefix = options.env ?? `verify-${new Date().toISOString().replace(/[:.]/g, '-')}`
+
+  context.terminal.title('Backbone verification gate')
+  context.terminal.subtitle(`scenarios: ${scenarios.join(', ')}`)
+
+  const results = await Promise.all(
+    scenarios.map(async (scenario) => {
+      const validation = await runVerificationSandbox(context, {
+        envName: cleanEnvName(`${prefix}-validation-${scenario}`),
+        description: `Backbone ${scenario} verification validation-day sandbox`,
+        run: (db) =>
+          runBackboneAccuracySimulation(db, {
+            startAt: options.asOf,
+            trainingDays: options.trainingDays,
+            scenario,
+          }),
+      })
+      const rolling = await runVerificationSandbox(context, {
+        envName: cleanEnvName(`${prefix}-rolling-${scenario}`),
+        description: `Backbone ${scenario} verification rolling sandbox`,
+        run: (db) =>
+          runBackboneRollingBacktest(db, {
+            startAt: options.asOf,
+            days: options.days,
+            horizonDays: options.horizonDays,
+            countCadenceDays: options.countCadenceDays,
+            warmupDays: options.warmupDays,
+            scenario,
+          }),
+      })
+      return { scenario, validation, rolling }
+    }),
+  )
+
+  context.terminal.section('Validation-day gate')
+  context.terminal.table(
+    results.map(({ scenario, validation }) => ({
+      scenario,
+      env: validation.envName,
+      passed: validation.result.passed,
+      bottleMae: validation.result.bottleMae,
+      maxBottleError: validation.result.maxBottleError,
+      lowStockRecall: validation.result.lowStockRecall,
+      lowStockPrecision: validation.result.lowStockPrecision,
+      costOptions: validation.result.costCuttingOptions,
+      feedback: validation.result.feedbackItems,
+      calibrated: validation.result.calibratedSkus,
+    })),
+  )
+
+  context.terminal.section('Rolling backtest gate')
+  context.terminal.table(
+    results.map(({ scenario, rolling }) => ({
+      scenario,
+      env: rolling.envName,
+      passed: rolling.result.passed,
+      runs: rolling.result.runCount,
+      evaluated: rolling.result.evaluatedPredictions,
+      counts: rolling.result.countSnapshots,
+      bottleMae: rolling.result.bottleMae,
+      maxBottleError: rolling.result.maxBottleError,
+      lowStockRecall: rolling.result.lowStockRecall,
+      lowStockPrecision: rolling.result.lowStockPrecision,
+      costOptions: rolling.result.costCuttingOptions,
+      shrinkSignals: rolling.result.shrinkSignals,
+      feedback: rolling.result.feedbackItems,
+      calibrated: rolling.result.calibratedSkus,
+    })),
+  )
+
+  const failed = results.filter(({ validation, rolling }) => !validation.result.passed || !rolling.result.passed)
+  if (failed.length > 0) throw new Error(`backbone_verify_failed:${failed.map(({ scenario }) => scenario).join(',')}`)
+  context.terminal.success(`Backbone verification passed ${results.length}/${results.length} scenario${results.length === 1 ? '' : 's'}.`)
+}
+
 export const backboneMatrix = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
@@ -1255,7 +1333,7 @@ export const backboneMatrix = async (args: string[], context: CommandContext): P
         migrateDatabase(db)
         const result = runBackboneAccuracySimulation(db, {
           startAt: options.asOf,
-          trainingDays: options.trainingDays,
+          trainingDays: options.trainingDays ?? (options.days ? options.days - 1 : undefined),
           scenario,
         })
         return { envName, envDbPath, result }
@@ -1283,6 +1361,35 @@ export const backboneMatrix = async (args: string[], context: CommandContext): P
   const failed = results.filter(({ result }) => !result.passed)
   if (failed.length > 0) throw new Error(`backbone_matrix_failed:${failed.map(({ result }) => result.scenario).join(',')}`)
   context.terminal.success(`Backbone scenario matrix passed ${results.length}/${results.length} scenarios.`)
+}
+
+const runVerificationSandbox = async <T extends { passed: boolean }>(
+  context: CommandContext,
+  input: {
+    envName: string
+    description: string
+    run: (db: Db) => T
+  },
+): Promise<{ envName: string; envDbPath: string; result: T }> => {
+  const envDir = resolve(context.config.dataDir, 'environments', input.envName)
+  const envDbPath = resolve(envDir, 'barsbookkeeper.sqlite')
+  await mkdir(envDir, { recursive: true })
+
+  await withBackendDb(context.config, async (controlDb: any) => {
+    ensureBackboneEnvironment(controlDb, {
+      name: input.envName,
+      dbPath: envDbPath,
+      description: input.description,
+    })
+  })
+
+  const db = openDatabase(envDbPath)
+  try {
+    migrateDatabase(db)
+    return { envName: input.envName, envDbPath, result: input.run(db) }
+  } finally {
+    db.close()
+  }
 }
 
 const buildBackboneAudit = (
@@ -1749,7 +1856,6 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--days' && next) {
       parsed.days = positiveNumber(next, '--days')
-      parsed.trainingDays = parsed.days - 1
       index += 1
     } else if (arg === '--cycles' && next) {
       parsed.cycles = positiveNumber(next, '--cycles')

@@ -49,6 +49,7 @@ npm run bbk -- brain run
 npm run bbk -- backbone run
 npm run bbk -- backbone listen
 npm run bbk -- backbone status
+npm run bbk -- backbone verify --env acceptance --days 60
 npm run bbk -- backbone simulate --env test-lab --days 30
 npm run bbk -- backbone backtest --env rolling-lab --days 60
 npm run bbk -- backbone backtest-matrix --env rolling-matrix --days 60
@@ -73,6 +74,7 @@ npm run bbk -- backbone accuracy
 npm run bbk -- backbone memory
 npm run bbk -- backbone explain --sku "Backbone Vodka 1L"
 npm run bbk -- backbone audit
+npm run bbk -- backbone verify --env acceptance --days 60
 npm run bbk -- backbone envs
 npm run bbk -- backbone env-prune --older-than-days 14
 ```
@@ -106,6 +108,8 @@ Successful listener pulls with a known time window update `backbone_toast_cursor
 
 Use `bbk backbone audit` as an operational trust gate. It checks for a recent listener heartbeat, fresh prediction run, listener-to-prediction linkage, sparse count grounding, recent listener failures, prediction coverage, low-stock signals, cost signals, feedback calibration, and Toast cursor state. Hard failures exit non-zero; missing count, cost, calibration, or cursor signals are warnings so a quiet bar day does not block operations. Use `--max-age-minutes` for listener heartbeat freshness, `--max-run-age-minutes` when prediction freshness needs a different threshold, and `--max-count-age-days` for sparse bottle-count cadence.
 
+Use `bbk backbone verify` as the acceptance gate for model redesign work. It creates fresh isolated environments, runs the validation-day simulation and rolling backtest for each scenario, and exits non-zero unless every scenario passes bottle-count accuracy, low-stock detection, cost-cutting detection, shrink detection, feedback, and calibration thresholds.
+
 For destructive or time-warped testing, use isolated environments. Each simulation gets its own database under `data/environments/<name>/`, so multiple tests can run without touching the base product database.
 
 ```sh
@@ -116,6 +120,7 @@ npm run bbk -- backbone simulate --env weekend-swing --scenario volatile --days 
 npm run bbk -- backbone simulate --env vendor-drift --scenario price-drift --days 30
 npm run bbk -- backbone accuracy --env weekend-swing --min-samples 3
 npm run bbk -- backbone memory --env weekend-swing
+npm run bbk -- backbone verify --env acceptance-matrix --days 60 --count-cadence-days 30
 npm run bbk -- backbone backtest --env rolling-month --scenario volatile --days 60 --count-cadence-days 30
 npm run bbk -- backbone backtest-matrix --env rolling-month-matrix --days 60 --count-cadence-days 30
 npm run bbk -- backbone matrix --env month-end-matrix --days 30
@@ -124,7 +129,7 @@ npm run bbk -- backbone env-prune --older-than-days 14 --keep 20
 npm run bbk -- backbone env-prune --older-than-days 14 --keep 20 --force
 ```
 
-The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, hidden-shrink notes through sparse counts, and a validation day. It passes only when bottle-count error, low-stock detection, cost-cutting detection, shrink detection, invoice-driven vendor savings, and feedback calibration all clear deterministic thresholds. `bbk backbone backtest` is stricter over time: it walks a simulated Toast timeline day by day, with sparse count snapshots on the configured cadence, then scores rolling future predictions against hidden true inventory between those counts. The matrix commands run the steady, busy, slow, shrink, volatile weekend-demand, and price-drift scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database; `backtest-matrix` does that for the rolling timeline test. `bbk backbone env-prune` is dry-run by default; add `--force` only after reviewing the table of environments it will remove.
+The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, hidden-shrink notes through sparse counts, and a validation day. It passes only when bottle-count error, low-stock detection, cost-cutting detection, shrink detection, invoice-driven vendor savings, and feedback calibration all clear deterministic thresholds. `bbk backbone backtest` is stricter over time: it walks a simulated Toast timeline day by day, with sparse count snapshots on the configured cadence, then scores rolling future predictions against hidden true inventory between those counts. The matrix commands run the steady, busy, slow, shrink, volatile weekend-demand, and price-drift scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database; `backtest-matrix` does that for the rolling timeline test, and `verify` combines validation-day and rolling gates in one command. `bbk backbone env-prune` is dry-run by default; add `--force` only after reviewing the table of environments it will remove.
 
 ## Terminal Console
 
