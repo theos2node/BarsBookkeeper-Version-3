@@ -138,6 +138,22 @@ type SnapshotManifest = {
   [key: string]: unknown
 }
 
+type SnapshotArtifact = {
+  label: string
+  snapshotPath: string
+  manifestPath: string
+  sizeBytes: number
+  manifest: SnapshotManifest
+}
+
+type SnapshotRestoreArtifact = {
+  label: string
+  env: string
+  snapshotPath: string
+  envDbPath: string
+  forced: boolean
+}
+
 type HorizonRun = {
   horizonDays: number
   predictions: Array<{
@@ -294,40 +310,18 @@ export const backboneService = async (args: string[], context: CommandContext): 
 export const backboneSnapshot = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const label = cleanEnvName(options.label ?? `backbone-${new Date().toISOString().replace(/[:.]/g, '-')}`)
-  const backupDir = resolve(context.config.dataDir, 'backups')
-  const snapshotPath = resolve(backupDir, `${label}.sqlite`)
-  const manifestPath = resolve(backupDir, `${label}.manifest.json`)
 
   context.terminal.title('Backbone snapshot')
-  await mkdir(backupDir, { recursive: true })
-  if (existsSync(snapshotPath) || existsSync(manifestPath)) {
-    throw new Error(`backbone_snapshot_exists:${label}`)
-  }
-
-  await withBackendDb(context.config, async (db: any) => {
-    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-    db.exec(`VACUUM INTO '${sqlString(snapshotPath)}'`)
-    const snapshotStat = await stat(snapshotPath)
-    const manifest = buildSnapshotManifest(db, {
-      label,
-      snapshotPath,
-      manifestPath,
-      sizeBytes: snapshotStat.size,
-      dataDir: context.config.dataDir,
-      dbPath: context.config.dbPath,
-    })
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
-
-    context.terminal.success(`Snapshot written: ${snapshotPath}`)
-    context.terminal.dump({
-      label,
-      snapshotPath,
-      manifestPath,
-      sizeBytes: snapshotStat.size,
-      backboneRuns: manifest.counts.backboneRuns,
-      predictions: manifest.counts.backbonePredictions,
-      verifications: manifest.counts.backboneVerifications,
-    })
+  const snapshot = await createBackboneSnapshotArtifact(context, label)
+  context.terminal.success(`Snapshot written: ${snapshot.snapshotPath}`)
+  context.terminal.dump({
+    label,
+    snapshotPath: snapshot.snapshotPath,
+    manifestPath: snapshot.manifestPath,
+    sizeBytes: snapshot.sizeBytes,
+    backboneRuns: snapshot.manifest.counts.backboneRuns,
+    predictions: snapshot.manifest.counts.backbonePredictions,
+    verifications: snapshot.manifest.counts.backboneVerifications,
   })
 }
 
@@ -384,47 +378,15 @@ export const backboneSnapshotRestore = async (args: string[], context: CommandCo
   if (!options.env) throw new Error('restore_environment_required')
   const label = cleanEnvName(options.label)
   const envName = cleanEnvName(options.env)
-  const backupDir = resolve(context.config.dataDir, 'backups')
-  const snapshotPath = resolve(backupDir, `${label}.sqlite`)
-  const manifestPath = resolve(backupDir, `${label}.manifest.json`)
-  const environmentRoot = resolve(context.config.dataDir, 'environments')
-  const envDir = resolve(context.config.dataDir, 'environments', envName)
-  const envDbPath = resolve(envDir, 'barsbookkeeper.sqlite')
 
   context.terminal.title('Backbone snapshot restore')
-  if (!existsSync(snapshotPath)) throw new Error(`backbone_snapshot_missing:${snapshotPath}`)
-  if (!existsSync(manifestPath)) throw new Error(`backbone_snapshot_manifest_missing:${manifestPath}`)
-  if (!isInsideDirectory(environmentRoot, envDir)) throw new Error(`unsafe_restore_environment_path:${envDir}`)
-  if (existsSync(envDir) && !options.force) throw new Error(`backbone_restore_environment_exists:${envName}:use_--force_to_replace`)
-
-  await assertSnapshotReadable(snapshotPath, manifestPath)
-  if (options.force) await rm(envDir, { recursive: true, force: true })
-  await mkdir(envDir, { recursive: true })
-  await copyFile(snapshotPath, envDbPath)
-
-  const restoredDb = openDatabase(envDbPath)
-  try {
-    migrateDatabase(restoredDb)
-  } finally {
-    restoredDb.close()
-  }
-
-  await withBackendDb(context.config, async (controlDb: any) => {
-    ensureBackboneEnvironment(controlDb, {
-      name: envName,
-      dbPath: envDbPath,
-      description: `Restored from Backbone snapshot ${label}`,
-    })
-  })
-
-  context.terminal.success(`Snapshot ${label} restored into environment ${envName}.`)
-  context.terminal.dump({
+  const restored = await restoreBackboneSnapshotArtifact(context, {
     label,
-    env: envName,
-    snapshotPath,
-    envDbPath,
-    forced: Boolean(options.force),
+    envName,
+    force: Boolean(options.force),
   })
+  context.terminal.success(`Snapshot ${label} restored into environment ${envName}.`)
+  context.terminal.dump(restored)
 }
 
 export const backboneActions = async (_args: string[], context: CommandContext): Promise<void> => {
@@ -983,6 +945,89 @@ const buildSnapshotManifest = (
           updatedAt: cursor.updated_at,
         }
       : null,
+  }
+}
+
+const createBackboneSnapshotArtifact = async (context: CommandContext, label: string): Promise<SnapshotArtifact> => {
+  const backupDir = resolve(context.config.dataDir, 'backups')
+  const snapshotPath = resolve(backupDir, `${label}.sqlite`)
+  const manifestPath = resolve(backupDir, `${label}.manifest.json`)
+
+  await mkdir(backupDir, { recursive: true })
+  if (existsSync(snapshotPath) || existsSync(manifestPath)) {
+    throw new Error(`backbone_snapshot_exists:${label}`)
+  }
+
+  return withBackendDb(context.config, async (db: any) => {
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    db.exec(`VACUUM INTO '${sqlString(snapshotPath)}'`)
+    const snapshotStat = await stat(snapshotPath)
+    const manifest = buildSnapshotManifest(db, {
+      label,
+      snapshotPath,
+      manifestPath,
+      sizeBytes: snapshotStat.size,
+      dataDir: context.config.dataDir,
+      dbPath: context.config.dbPath,
+    })
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+
+    return {
+      label,
+      snapshotPath,
+      manifestPath,
+      sizeBytes: snapshotStat.size,
+      manifest,
+    }
+  })
+}
+
+const restoreBackboneSnapshotArtifact = async (
+  context: CommandContext,
+  input: {
+    label: string
+    envName: string
+    force: boolean
+  },
+): Promise<SnapshotRestoreArtifact> => {
+  const backupDir = resolve(context.config.dataDir, 'backups')
+  const snapshotPath = resolve(backupDir, `${input.label}.sqlite`)
+  const manifestPath = resolve(backupDir, `${input.label}.manifest.json`)
+  const environmentRoot = resolve(context.config.dataDir, 'environments')
+  const envDir = resolve(environmentRoot, input.envName)
+  const envDbPath = resolve(envDir, 'barsbookkeeper.sqlite')
+
+  if (!existsSync(snapshotPath)) throw new Error(`backbone_snapshot_missing:${snapshotPath}`)
+  if (!existsSync(manifestPath)) throw new Error(`backbone_snapshot_manifest_missing:${manifestPath}`)
+  if (!isInsideDirectory(environmentRoot, envDir)) throw new Error(`unsafe_restore_environment_path:${envDir}`)
+  if (existsSync(envDir) && !input.force) throw new Error(`backbone_restore_environment_exists:${input.envName}:use_--force_to_replace`)
+
+  await assertSnapshotReadable(snapshotPath, manifestPath)
+  if (input.force) await rm(envDir, { recursive: true, force: true })
+  await mkdir(envDir, { recursive: true })
+  await copyFile(snapshotPath, envDbPath)
+
+  const restoredDb = openDatabase(envDbPath)
+  try {
+    migrateDatabase(restoredDb)
+  } finally {
+    restoredDb.close()
+  }
+
+  await withBackendDb(context.config, async (controlDb: any) => {
+    ensureBackboneEnvironment(controlDb, {
+      name: input.envName,
+      dbPath: envDbPath,
+      description: `Restored from Backbone snapshot ${input.label}`,
+    })
+  })
+
+  return {
+    label: input.label,
+    env: input.envName,
+    snapshotPath,
+    envDbPath,
+    forced: input.force,
   }
 }
 
@@ -1953,6 +1998,151 @@ export const backboneVerify = async (args: string[], context: CommandContext): P
   context.terminal.success(`Backbone verification passed ${results.length}/${results.length} scenario${results.length === 1 ? '' : 's'}.`)
 }
 
+export const backboneAcceptance = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const prefix = cleanEnvName(`${options.env ?? 'acceptance'}-${timestamp}`)
+  const startedAt = new Date().toISOString()
+  const driftThresholds = {
+    minSamples: options.minSamples ?? 3,
+    maxBottleMae: options.maxBottleMae ?? 0.25,
+    maxBiasBottles: options.maxBiasBottles ?? 0.2,
+    maxFeedbackAgeDays: options.maxFeedbackAgeDays ?? options.maxCountAgeDays ?? 45,
+  }
+
+  context.terminal.title('Backbone acceptance drill')
+  context.terminal.subtitle(`fresh prefix: ${prefix}; scenarios: ${scenarios.join(', ')}`)
+
+  const results = await Promise.all(
+    scenarios.map(async (scenario) => {
+      const validation = await runVerificationSandbox(context, {
+        envName: cleanEnvName(`${prefix}-validation-${scenario}`),
+        description: `Backbone ${scenario} acceptance validation-day sandbox`,
+        run: (db) =>
+          runBackboneAccuracySimulation(db, {
+            startAt: options.asOf,
+            trainingDays: options.trainingDays,
+            scenario,
+          }),
+      })
+      const rolling = await runVerificationSandbox(context, {
+        envName: cleanEnvName(`${prefix}-rolling-${scenario}`),
+        description: `Backbone ${scenario} acceptance rolling sandbox`,
+        run: (db) =>
+          runBackboneRollingBacktest(db, {
+            startAt: options.asOf,
+            days: options.days,
+            horizonDays: options.horizonDays,
+            countCadenceDays: options.countCadenceDays,
+            warmupDays: options.warmupDays,
+            scenario,
+          }),
+      })
+      return { scenario, validation, rolling }
+    }),
+  )
+
+  context.terminal.section('Validation-day gate')
+  context.terminal.table(
+    results.map(({ scenario, validation }) => ({
+      scenario,
+      env: validation.envName,
+      passed: validation.result.passed,
+      bottleMae: validation.result.bottleMae,
+      maxBottleError: validation.result.maxBottleError,
+      lowStockRecall: validation.result.lowStockRecall,
+      lowStockPrecision: validation.result.lowStockPrecision,
+      costOptions: validation.result.costCuttingOptions,
+      feedback: validation.result.feedbackItems,
+      calibrated: validation.result.calibratedSkus,
+    })),
+  )
+
+  context.terminal.section('Rolling sparse-count gate')
+  context.terminal.table(
+    results.map(({ scenario, rolling }) => ({
+      scenario,
+      env: rolling.envName,
+      passed: rolling.result.passed,
+      runs: rolling.result.runCount,
+      evaluated: rolling.result.evaluatedPredictions,
+      counts: rolling.result.countSnapshots,
+      bottleMae: rolling.result.bottleMae,
+      maxBottleError: rolling.result.maxBottleError,
+      lowStockRecall: rolling.result.lowStockRecall,
+      lowStockPrecision: rolling.result.lowStockPrecision,
+      costOptions: rolling.result.costCuttingOptions,
+      shrinkSignals: rolling.result.shrinkSignals,
+      feedback: rolling.result.feedbackItems,
+      calibrated: rolling.result.calibratedSkus,
+    })),
+  )
+
+  const driftRows = results.flatMap(({ scenario, validation, rolling }) => [
+    {
+      scenario,
+      gate: 'validation',
+      env: validation.envName,
+      ...readLearningDriftSummary(validation.envDbPath, validation.envName, driftThresholds),
+    },
+    {
+      scenario,
+      gate: 'rolling',
+      env: rolling.envName,
+      ...readLearningDriftSummary(rolling.envDbPath, rolling.envName, driftThresholds),
+    },
+  ])
+  context.terminal.section('Learning drift gate')
+  context.terminal.table(
+    driftRows.map((row) => ({
+      scenario: row.scenario,
+      gate: row.gate,
+      env: row.env,
+      status: row.status,
+      samples: row.feedbackSamples,
+      bottleMae: row.bottleMae,
+      biasBottles: row.biasBottles,
+      ageDays: row.feedbackAgeDays ?? '',
+      trendDelta: row.trendDelta,
+      reason: row.statusReason,
+    })),
+  )
+
+  const snapshotLabel = cleanEnvName(options.label ?? `${prefix}-snapshot`)
+  const snapshot = await createBackboneSnapshotArtifact(context, snapshotLabel)
+  const restored = await restoreBackboneSnapshotArtifact(context, {
+    label: snapshotLabel,
+    envName: cleanEnvName(`${prefix}-restore`),
+    force: false,
+  })
+  context.terminal.section('Snapshot restore gate')
+  context.terminal.table([
+    {
+      label: snapshot.label,
+      restoredEnv: restored.env,
+      snapshotBytes: snapshot.sizeBytes,
+      integrity: 'ok',
+      restored: true,
+      db: restored.envDbPath,
+    },
+  ])
+
+  const failed = results.filter(({ validation, rolling }) => !validation.result.passed || !rolling.result.passed)
+  const driftWarnings = driftRows.filter((row) => row.status !== 'pass')
+  await persistVerificationResult(context, {
+    startedAt,
+    status: failed.length > 0 || driftWarnings.length > 0 ? 'failed' : 'passed',
+    scenarios,
+    options: { ...options, env: prefix },
+    results,
+  })
+
+  if (failed.length > 0) throw new Error(`backbone_acceptance_failed:${failed.map(({ scenario }) => scenario).join(',')}`)
+  if (driftWarnings.length > 0) throw new Error(`backbone_acceptance_drift_warn:${driftWarnings.map((row) => `${row.scenario}:${row.gate}`).join(',')}`)
+  context.terminal.success(`Backbone acceptance drill passed ${results.length}/${results.length} scenario${results.length === 1 ? '' : 's'}.`)
+}
+
 export const backboneVerifyHistory = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const limit = options.limit ?? 10
@@ -2080,6 +2270,20 @@ const runVerificationSandbox = async <T extends { passed: boolean }>(
   try {
     migrateDatabase(db)
     return { envName: input.envName, envDbPath, result: input.run(db) }
+  } finally {
+    db.close()
+  }
+}
+
+const readLearningDriftSummary = (
+  dbPath: string,
+  target: string,
+  thresholds: LearningDriftSummary['thresholds'],
+): LearningDriftSummary => {
+  const db = openDatabase(dbPath)
+  try {
+    migrateDatabase(db)
+    return buildLearningDriftSummary(db, target, thresholds)
   } finally {
     db.close()
   }

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -467,4 +467,36 @@ process.exit(1)
     expect(restore.output).toContain('unsafe_restore_environment_path')
     expect(existsSync(join(dataDir, 'barsbookkeeper.sqlite'))).toBe(true)
   })
+
+  it('runs the full Backbone acceptance drill in fresh isolated environments', async () => {
+    await expectCliOk(['setup'], dataDir)
+
+    const output = await expectCliOk(
+      ['backbone', 'acceptance', '--env', 'accept-smoke', '--scenario', 'shrink', '--days', '60', '--count-cadence-days', '30'],
+      dataDir,
+    )
+    expect(output).toContain('Backbone acceptance drill')
+    expect(output).toContain('fresh prefix: accept-smoke-')
+    expect(output).toContain('Validation-day gate')
+    expect(output).toContain('Rolling sparse-count gate')
+    expect(output).toContain('Learning drift gate')
+    expect(output).toContain('Snapshot restore gate')
+    expect(output).toContain('Backbone acceptance drill passed 1/1 scenario.')
+
+    const backups = await readdir(join(dataDir, 'backups'))
+    expect(backups.some((file) => file.startsWith('accept-smoke-') && file.endsWith('.sqlite'))).toBe(true)
+    expect(backups.some((file) => file.startsWith('accept-smoke-') && file.endsWith('.manifest.json'))).toBe(true)
+
+    db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_verifications WHERE status = 'passed'")).toBe(1)
+    expect(
+      scalar(db, "SELECT COUNT(*) AS value FROM backbone_environments WHERE name LIKE 'accept-smoke-%-restore'"),
+    ).toBe(1)
+    expect(
+      scalar(db, "SELECT COUNT(*) AS value FROM backbone_environments WHERE name LIKE 'accept-smoke-%-validation-shrink'"),
+    ).toBe(1)
+    expect(
+      scalar(db, "SELECT COUNT(*) AS value FROM backbone_environments WHERE name LIKE 'accept-smoke-%-rolling-shrink'"),
+    ).toBe(1)
+  }, 20_000)
 })

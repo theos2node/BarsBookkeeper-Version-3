@@ -55,6 +55,7 @@ npm run bbk -- backbone snapshot-restore --label before-migration --env restore-
 npm run bbk -- backbone drift
 npm run bbk -- backbone status
 npm run bbk -- backbone verify --env acceptance --days 60
+npm run bbk -- backbone acceptance --env acceptance-drill --days 60
 npm run bbk -- backbone simulate --env test-lab --days 30
 npm run bbk -- backbone backtest --env rolling-lab --days 60
 npm run bbk -- backbone backtest-matrix --env rolling-matrix --days 60
@@ -85,6 +86,7 @@ npm run bbk -- backbone drift
 npm run bbk -- backbone explain --sku "Backbone Vodka 1L"
 npm run bbk -- backbone audit
 npm run bbk -- backbone verify --env acceptance --days 60
+npm run bbk -- backbone acceptance --env acceptance-drill --days 60
 npm run bbk -- backbone verify-history
 npm run bbk -- backbone envs
 npm run bbk -- backbone env-prune --older-than-days 14
@@ -135,6 +137,8 @@ Use `bbk backbone audit` as an operational trust gate. It checks for a recent li
 
 Use `bbk backbone verify` as the acceptance gate for model redesign work. It creates fresh isolated environments, runs the validation-day simulation and rolling backtest for each scenario, and exits non-zero unless every scenario passes bottle-count accuracy, low-stock detection, cost-cutting detection, shrink detection, feedback, and calibration thresholds. Each verification run is persisted in `backbone_verifications`; use `bbk backbone verify-history` to inspect recent pass/fail history after terminal sessions end.
 
+Use `bbk backbone acceptance` when you want the whole resilience drill in one command. It creates fresh validation and rolling sandboxes, checks learning drift against sparse-count feedback, snapshots the base SQLite database, restores that snapshot into an isolated environment, persists the verification result, and exits non-zero if any gate fails.
+
 For destructive or time-warped testing, use isolated environments. Each simulation gets its own database under `data/environments/<name>/`, so multiple tests can run without touching the base product database.
 
 ```sh
@@ -146,6 +150,7 @@ npm run bbk -- backbone simulate --env vendor-drift --scenario price-drift --day
 npm run bbk -- backbone accuracy --env weekend-swing --min-samples 3
 npm run bbk -- backbone memory --env weekend-swing
 npm run bbk -- backbone verify --env acceptance-matrix --days 60 --count-cadence-days 30
+npm run bbk -- backbone acceptance --env acceptance-matrix --days 60 --count-cadence-days 30
 npm run bbk -- backbone backtest --env rolling-month --scenario volatile --days 60 --count-cadence-days 30
 npm run bbk -- backbone backtest-matrix --env rolling-month-matrix --days 60 --count-cadence-days 30
 npm run bbk -- backbone matrix --env month-end-matrix --days 30
