@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { openDatabase, toNumber } from '../db/database.js'
@@ -117,6 +118,35 @@ export const backboneActions = async (_args: string[], context: CommandContext):
   })
 }
 
+export const backboneEnvs = async (_args: string[], context: CommandContext): Promise<void> => {
+  context.terminal.title('Backbone environments')
+  await withBackendDb(context.config, async (db: any) => {
+    const rows = db
+      .prepare(
+        `SELECT id, name, db_path, description, created_at, last_run_at
+         FROM backbone_environments
+         ORDER BY COALESCE(last_run_at, created_at) DESC, id DESC`,
+      )
+      .all()
+
+    if (rows.length === 0) {
+      context.terminal.warn('No isolated Backbone environments yet.')
+      context.terminal.subtitle('Run `bbk backbone simulate --env <name>` or `bbk backbone matrix --env <prefix>`.')
+      return
+    }
+
+    context.terminal.table(
+      rows.map((row: any) => ({
+        env: row.name,
+        status: existsSync(String(row.db_path)) ? 'ready' : 'missing-db',
+        latestRun: environmentLatestRun(String(row.db_path)),
+        lastSeen: row.last_run_at ?? row.created_at,
+        path: row.db_path,
+      })),
+    )
+  })
+}
+
 export const backboneAudit = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const maxAgeMinutes = options.maxAgeMinutes ?? 60
@@ -140,6 +170,26 @@ export const backboneAudit = async (args: string[], context: CommandContext): Pr
         : 'Backbone audit passed.',
     )
   })
+}
+
+const environmentLatestRun = (dbPath: string): string => {
+  if (!existsSync(dbPath)) return ''
+  const db = openDatabase(dbPath)
+  try {
+    migrateDatabase(db)
+    const run = db
+      .prepare(
+        `SELECT id, status, metrics_json
+         FROM backbone_runs
+         ORDER BY id DESC
+         LIMIT 1`,
+      )
+      .get()
+    if (!run) return 'none'
+    return `#${toNumber(run.id)} ${run.status}`
+  } finally {
+    db.close()
+  }
 }
 
 export const backboneListen = async (args: string[], context: CommandContext): Promise<void> => {

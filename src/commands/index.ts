@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneActions, backboneAudit, backboneListen, backboneMatrix, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneActions, backboneAudit, backboneEnvs, backboneListen, backboneMatrix, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -84,6 +84,12 @@ export const createCommands = (
     usage: 'bbk backbone actions',
     summary: 'Show actionable low-stock orders and cost-cutting signals from the latest Backbone run.',
     handler: backboneActions,
+  },
+  {
+    path: ['backbone', 'envs'],
+    usage: 'bbk backbone envs',
+    summary: 'List isolated Backbone simulation environments and latest run state.',
+    handler: backboneEnvs,
   },
   {
     path: ['backbone', 'listen'],

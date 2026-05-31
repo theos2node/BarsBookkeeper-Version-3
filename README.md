@@ -63,6 +63,7 @@ npm run bbk -- backbone run --horizon-days 7
 npm run bbk -- backbone status
 npm run bbk -- backbone actions
 npm run bbk -- backbone audit
+npm run bbk -- backbone envs
 ```
 
 `bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals.
@@ -88,6 +89,7 @@ npm run bbk -- backbone simulate --env month-end-wrap --days 30
 npm run bbk -- backbone simulate --env busy-month --scenario busy --days 30
 npm run bbk -- backbone simulate --env shrink-month --scenario shrink --days 30
 npm run bbk -- backbone matrix --env month-end-matrix --days 30
+npm run bbk -- backbone envs
 ```
 
 The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, hidden-shrink notes through sparse counts, and a validation day. It passes only when bottle-count error, low-stock detection, cost-cutting detection, shrink detection, and feedback calibration all clear deterministic thresholds. The matrix command runs the steady, busy, slow, and shrink scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database.
