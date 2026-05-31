@@ -249,6 +249,14 @@ const firstNumber = (...values: unknown[]): number => {
   return 0
 }
 
+const selectionChildren = (selection: any): any[] => {
+  const children: any[] = []
+  for (const key of ['modifiers', 'modifierSelections', 'childSelections', 'children']) {
+    if (Array.isArray(selection?.[key])) children.push(...selection[key])
+  }
+  return children
+}
+
 export const flattenToastOrders = (payload: unknown, restaurantExternalId = ''): ToastSalesRow[] => {
   const orders = arrayFromPayload(payload)
   const rows: ToastSalesRow[] = []
@@ -259,24 +267,52 @@ export const flattenToastOrders = (payload: unknown, restaurantExternalId = ''):
     const businessDate = firstString(order?.businessDate, occurredAt)
     for (const check of checks) {
       const selections = Array.isArray(check?.selections) ? check.selections : Array.isArray(check?.items) ? check.items : []
-      for (let index = 0; index < selections.length; index += 1) {
-        const selection = selections[index]
-        if (selection?.voided || selection?.deleted) continue
+      const collectSelection = (
+        selection: any,
+        indexPath: string[],
+        parentMultiplier: number,
+        parentMenuItemName = '',
+      ): void => {
+        if (selection?.voided || selection?.deleted) return
         const item = selection?.item || selection?.menuItem || {}
         const menuItemName = firstString(selection?.displayName, selection?.name, item?.name, item?.displayName)
-        const quantitySold = firstNumber(selection?.quantity, selection?.qty, selection?.count, 1)
-        if (!menuItemName || quantitySold <= 0) continue
-        const selectionId = firstString(selection?.guid, selection?.id, selection?.externalId, `${order?.guid || order?.id || 'order'}-${index}`)
-        rows.push({
-          externalId: [restaurantExternalId, firstString(order?.guid, order?.id), firstString(check?.guid, check?.id), selectionId]
-            .filter(Boolean)
-            .join(':'),
-          businessDate,
-          occurredAt: firstString(selection?.createdDate, occurredAt, businessDate),
-          menuItem: menuItemName,
-          menuItemName,
-          quantitySold,
-        })
+        const ownQuantity = firstNumber(selection?.quantity, selection?.qty, selection?.count, 1)
+        const quantitySold = parentMultiplier * ownQuantity
+        const selectionId = firstString(selection?.guid, selection?.id, selection?.externalId, indexPath[indexPath.length - 1])
+        const externalIdParts = [
+          restaurantExternalId,
+          firstString(order?.guid, order?.id),
+          firstString(check?.guid, check?.id),
+          ...indexPath.slice(0, -1),
+          selectionId,
+        ]
+        if (menuItemName && quantitySold > 0) {
+          const row: ToastSalesRow = {
+            externalId: externalIdParts.filter(Boolean).join(':'),
+            businessDate,
+            occurredAt: firstString(selection?.createdDate, occurredAt, businessDate),
+            menuItem: menuItemName,
+            menuItemName,
+            selectionRole: parentMenuItemName ? 'modifier' : 'selection',
+            quantitySold,
+          }
+          if (parentMenuItemName) row.parentMenuItemName = parentMenuItemName
+          rows.push(row)
+        }
+
+        const children = selectionChildren(selection)
+        for (let childIndex = 0; childIndex < children.length; childIndex += 1) {
+          collectSelection(
+            children[childIndex],
+            [...indexPath, firstString(children[childIndex]?.guid, children[childIndex]?.id, `modifier-${childIndex}`)],
+            Math.max(0, quantitySold),
+            menuItemName || parentMenuItemName,
+          )
+        }
+      }
+
+      for (let index = 0; index < selections.length; index += 1) {
+        collectSelection(selections[index], [firstString(selections[index]?.guid, selections[index]?.id, selections[index]?.externalId, `${order?.guid || order?.id || 'order'}-${index}`)], 1)
       }
     }
   }

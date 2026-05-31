@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runOpenClawBrain } from '../src/brain/openclaw.js'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
+import { ensureMenuItem, ensureSku, upsertRecipeItem } from '../src/db/repositories.js'
 import { seedDemoData } from '../src/db/seed.js'
 import { ingestCounts, ingestToastSales } from '../src/ingest/index.js'
 import { mapToastRecipeAndBackfill } from '../src/ingest/recipes.js'
@@ -52,9 +53,94 @@ describe('OpenClaw and Toast prototype integration', () => {
         occurredAt: '2026-05-11T18:00:00.000Z',
         menuItem: 'House Mule',
         menuItemName: 'House Mule',
+        selectionRole: 'selection',
         quantitySold: 2,
       },
     ])
+  })
+
+  it('flattens Toast modifier selections into separate sale evidence rows', () => {
+    const rows = flattenToastOrders(
+      {
+        orders: [
+          {
+            guid: 'order-mod',
+            closedDate: '2026-05-11T18:00:00.000Z',
+            checks: [
+              {
+                guid: 'check-mod',
+                selections: [
+                  {
+                    guid: 'sel-mule',
+                    displayName: 'House Mule',
+                    quantity: 2,
+                    modifiers: [
+                      { guid: 'mod-lime', displayName: 'Extra Lime', quantity: 1 },
+                      { guid: 'mod-void', displayName: 'No Charge Splash', quantity: 1, voided: true },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      'restaurant-1',
+    )
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        externalId: 'restaurant-1:order-mod:check-mod:sel-mule',
+        menuItem: 'House Mule',
+        selectionRole: 'selection',
+        quantitySold: 2,
+      }),
+      expect.objectContaining({
+        externalId: 'restaurant-1:order-mod:check-mod:sel-mule:mod-lime',
+        menuItem: 'Extra Lime',
+        parentMenuItemName: 'House Mule',
+        selectionRole: 'modifier',
+        quantitySold: 2,
+      }),
+    ])
+  })
+
+  it('ingests Toast modifiers as inventory consumption when mapped', () => {
+    seedDemoData(db, '2026-05-11T12:00:00.000Z')
+    const limeSkuId = ensureSku(db, { name: 'Lime Juice', unit: 'ml', category: 'produce' })
+    const extraLimeId = ensureMenuItem(db, 'Extra Lime', 'toast-extra-lime', 'modifier')
+    upsertRecipeItem(db, { menuItemId: extraLimeId, skuId: limeSkuId, quantity: 10, unit: 'ml' })
+
+    const rows = flattenToastOrders({
+      orders: [
+        {
+          guid: 'order-mod-consume',
+          closedDate: '2026-05-11T18:00:00.000Z',
+          checks: [
+            {
+              guid: 'check-mod-consume',
+              selections: [
+                {
+                  guid: 'sel-mule-consume',
+                  displayName: 'House Mule',
+                  quantity: 2,
+                  modifiers: [{ guid: 'mod-lime-consume', displayName: 'Extra Lime', quantity: 1 }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    const result = ingestToastSales(db, rows)
+    const limeSold = db
+      .prepare("SELECT ABS(SUM(quantity)) AS quantity FROM inventory_events WHERE sku_id = ? AND event_type = 'sale'")
+      .get(limeSkuId)
+
+    expect(result.recordsImported).toBe(2)
+    expect(limeSold?.quantity).toBe(60)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE external_id LIKE '%mod-lime-consume'").get()?.count).toBe(1)
   })
 
   it('accepts nested Toast data wrappers and flat item payloads', () => {

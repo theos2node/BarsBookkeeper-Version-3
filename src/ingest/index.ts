@@ -55,6 +55,8 @@ export type ToastSalesRow = {
   occurredAt?: string
   menuItem?: string
   menuItemName?: string
+  parentMenuItemName?: string
+  selectionRole?: string
   quantitySold?: string | number
   quantity?: string | number
 }

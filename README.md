@@ -120,6 +120,8 @@ Action, gap, and trust reports include command-ready next steps where possible, 
 
 When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit>`. The command stores the recipe ingredient, backfills prior unresolved Toast sale documents into inventory consumption, and suppresses the related missing-recipe review task once the backlog has been made usable.
 
+Toast order intake flattens check selections and nested modifier selections into separate sale evidence rows with stable external IDs. Modifiers keep their parent menu item in the raw evidence and multiply by the parent quantity, so mapped add-ons or sides can contribute inventory usage instead of disappearing inside the parent order.
+
 `bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, feedback band coverage, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
 
 `bbk backbone memory` shows what the model has learned from scored counts: SKU-level correction direction, bottle error, confidence adjustment, whether actual counts landed inside the prediction band, recent feedback, and current low-stock or cost risks that still lack calibration memory. Add `--env <name>` to inspect a sandbox.

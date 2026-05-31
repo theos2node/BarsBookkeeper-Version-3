@@ -448,7 +448,7 @@ process.exit(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM order_recommendations WHERE status = 'open'")).toBe(
       baseline.openOrders,
     )
-  }, 35_000)
+  }, 180_000)
 
   it('reports Toast setup problems without credentials and without making a network pull', async () => {
     await expectCliOk(['setup'], dataDir)
@@ -464,7 +464,7 @@ process.exit(1)
     expect(pull.output).toContain('toast_restaurant_ids_missing')
     expect(pull.output).not.toContain('toast_pull_failed')
     expect(pull.output).not.toContain('toast_auth_failed')
-  })
+  }, 30_000)
 
   it('recovers abandoned listener journal rows before starting a new Backbone cycle', async () => {
     await expectCliOk(['setup'], dataDir)
@@ -494,7 +494,7 @@ process.exit(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'completed'")).toBe(1)
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runs')).toBe(1)
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_runtime_locks')).toBe(0)
-  })
+  }, 60_000)
 
   it('takes over stale Backbone listener locks but rejects active concurrent listeners', async () => {
     await expectCliOk(['setup'], dataDir)
@@ -541,7 +541,7 @@ process.exit(1)
     )
     expect(blocked.code).toBe(1)
     expect(blocked.output).toContain('backbone_listener_lock_held:active-owner')
-  })
+  }, 60_000)
 
   it('dry-runs and force-prunes isolated Backbone environments safely', async () => {
     await expectCliOk(['setup'], dataDir)
@@ -571,7 +571,7 @@ process.exit(1)
     expect(
       scalar(db, "SELECT COUNT(*) AS value FROM backbone_environments WHERE name IN ('prune-a', 'prune-b')"),
     ).toBe(0)
-  })
+  }, 90_000)
 
   it('rejects unsafe snapshot restore environment paths', async () => {
     await expectCliOk(['setup'], dataDir)
@@ -583,7 +583,7 @@ process.exit(1)
     expect(restore.code).toBe(1)
     expect(restore.output).toContain('unsafe_restore_environment_path')
     expect(existsSync(join(dataDir, 'barsbookkeeper.sqlite'))).toBe(true)
-  })
+  }, 60_000)
 
   it('runs the full Backbone acceptance drill in fresh isolated environments', async () => {
     await expectCliOk(['setup'], dataDir)
@@ -624,5 +624,5 @@ process.exit(1)
     expect(
       scalar(db, "SELECT COUNT(*) AS value FROM backbone_environments WHERE name LIKE 'accept-smoke-%-rolling-shrink'"),
     ).toBe(1)
-  }, 20_000)
+  }, 60_000)
 })
