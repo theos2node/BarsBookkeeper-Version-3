@@ -10,9 +10,9 @@ export type BackboneSimulationOptions = {
   scenario?: BackboneSimulationScenario
 }
 
-export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow'
+export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow' | 'shrink'
 
-export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow']
+export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow', 'shrink']
 
 export type BackboneSimulationResult = {
   scenario: BackboneSimulationScenario
@@ -46,6 +46,11 @@ type ScenarioProfile = {
     tequila: number
     tripleSec: number
   }
+  hiddenShrinkDaily?: {
+    vodka?: number
+    tequila?: number
+    tripleSec?: number
+  }
 }
 
 const dayMs = 24 * 60 * 60 * 1000
@@ -73,6 +78,13 @@ const profiles: Record<BackboneSimulationScenario, ScenarioProfile> = {
     vodkaSales: 4,
     margaritaSales: 5,
     initial: { vodka: 10000, tequila: 10000, tripleSec: 5000 },
+  },
+  shrink: {
+    name: 'shrink',
+    vodkaSales: 8,
+    margaritaSales: 10,
+    initial: { vodka: 16000, tequila: 20000, tripleSec: 8000 },
+    hiddenShrinkDaily: { tequila: 120, tripleSec: 60 },
   },
 }
 
@@ -144,7 +156,8 @@ export const runBackboneAccuracySimulation = (
   const costCuttingOptions = evaluated.filter((row) => row.costSignal !== 'none').length
   const feedbackItems = scoreBackboneFeedback(db, { asOf: actualAsOf })
   const calibratedSkus = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
-  const passed = bottleMae <= 0.1 && maxBottleError <= 0.25 && lowStockRecall >= 1 && lowStockPrecision >= 0.75 && costCuttingOptions > 0
+  const shrinkDetected = profile.name !== 'shrink' || evaluated.some((row) => row.costSignal.includes('audit shrink'))
+  const passed = bottleMae <= 0.1 && maxBottleError <= 0.25 && lowStockRecall >= 1 && lowStockPrecision >= 0.75 && costCuttingOptions > 0 && shrinkDetected
 
   return {
     scenario: profile.name,
@@ -195,10 +208,13 @@ const simulationSales = (start: Date, day: number, profile: ScenarioProfile): To
 ]
 
 const countSnapshot = (start: Date, day: number, profile: ScenarioProfile, label: 'mid' | 'end'): CountRow[] => [
-  { countId: `BB-SIM-${profile.name}-${label}-VODKA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: profile.initial.vodka - profile.vodkaSales * recipe.vodkaSodaVodka * day, unit: 'ml' },
-  { countId: `BB-SIM-${profile.name}-${label}-TEQUILA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: profile.initial.tequila - profile.margaritaSales * recipe.margaritaTequila * day, unit: 'ml' },
-  { countId: `BB-SIM-${profile.name}-${label}-TRIPLE`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: profile.initial.tripleSec - profile.margaritaSales * recipe.margaritaTripleSec * day, unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-VODKA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: profile.initial.vodka - profile.vodkaSales * recipe.vodkaSodaVodka * day - hiddenShrink(profile, 'vodka', day), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-TEQUILA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: profile.initial.tequila - profile.margaritaSales * recipe.margaritaTequila * day - hiddenShrink(profile, 'tequila', day), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-TRIPLE`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: profile.initial.tripleSec - profile.margaritaSales * recipe.margaritaTripleSec * day - hiddenShrink(profile, 'tripleSec', day), unit: 'ml' },
 ]
+
+const hiddenShrink = (profile: ScenarioProfile, sku: keyof NonNullable<ScenarioProfile['hiddenShrinkDaily']>, day: number): number =>
+  (profile.hiddenShrinkDaily?.[sku] ?? 0) * day
 
 const bottleSize = (db: Db, skuId: number): number => {
   const row = db

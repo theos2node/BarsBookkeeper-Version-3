@@ -48,6 +48,15 @@ describe('Backbone prediction model', () => {
     }
   })
 
+  it('flags hidden shrink from sparse counts as an audit cost signal', () => {
+    const result = runBackboneAccuracySimulation(db, { scenario: 'shrink' })
+
+    expect(result.passed).toBe(true)
+    expect(result.feedbackItems).toBeGreaterThanOrEqual(3)
+    expect(result.calibratedSkus).toBeGreaterThanOrEqual(3)
+    expect(result.predictions.some((prediction) => prediction.costSignal.includes('audit shrink'))).toBe(true)
+  })
+
   it('scores sparse count feedback and carries calibration into future runs', () => {
     const result = runBackboneAccuracySimulation(db)
     expect(result.passed).toBe(true)
