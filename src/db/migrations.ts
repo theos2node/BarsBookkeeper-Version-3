@@ -394,6 +394,29 @@ const migrations: Migration[] = [
       ALTER TABLE backbone_feedback ADD COLUMN stockout_probability REAL;
     `,
   },
+  {
+    id: 11,
+    name: 'vendor_item_price_observations',
+    sql: `
+      CREATE TABLE IF NOT EXISTS vendor_item_prices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vendor_item_id INTEGER NOT NULL REFERENCES vendor_items(id),
+        vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+        sku_id INTEGER NOT NULL REFERENCES skus(id),
+        observed_at TEXT NOT NULL,
+        pack_size REAL NOT NULL DEFAULT 1,
+        pack_unit TEXT NOT NULL,
+        price REAL,
+        unit_cost REAL,
+        source_document_id INTEGER REFERENCES source_documents(id),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (vendor_item_id, observed_at, source_document_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_vendor_item_prices_sku_time ON vendor_item_prices(sku_id, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_vendor_item_prices_vendor_item_time ON vendor_item_prices(vendor_item_id, observed_at);
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

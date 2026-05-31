@@ -168,7 +168,7 @@ Use `bbk backbone verify` as the acceptance gate for model redesign work. It cre
 
 Use `bbk backbone acceptance` when you want the whole resilience drill in one command. It creates fresh validation and rolling sandboxes, checks learning drift against sparse-count feedback, snapshots the base SQLite database, restores that snapshot into an isolated environment, persists the verification result, and exits non-zero if any gate fails.
 
-For destructive or time-warped testing, use isolated environments. Each simulation gets its own database under `data/environments/<name>/`, so multiple tests can run without touching the base product database. Backbone prediction evidence is evaluated as of the run timestamp, so future-dated counts or invoices in a sandbox do not leak backward into earlier predictions.
+For destructive or time-warped testing, use isolated environments. Each simulation gets its own database under `data/environments/<name>/`, so multiple tests can run without touching the base product database. Backbone prediction evidence is evaluated as of the run timestamp, so future-dated counts, invoices, and invoice-observed vendor prices in a sandbox do not leak backward into earlier predictions.
 
 ```sh
 npm run bbk -- backbone simulate --env month-end-wrap --days 30

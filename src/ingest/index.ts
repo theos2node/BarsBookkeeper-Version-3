@@ -71,6 +71,16 @@ const value = (...candidates: unknown[]): string => {
   return ''
 }
 
+const fieldValue = (row: Record<string, unknown>, ...keys: string[]): string => value(...keys.map((key) => row[key]))
+
+const fieldNumber = (row: Record<string, unknown>, keys: string[], fallback = 0): number => {
+  for (const key of keys) {
+    const candidate = row[key]
+    if (candidate !== null && candidate !== undefined && candidate !== '') return toNumber(candidate, fallback)
+  }
+  return fallback
+}
+
 const hasSourceDocument = (db: Db, sourceId: number, externalId: string, documentType: string): boolean =>
   Boolean(
     db
@@ -88,23 +98,25 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
   try {
     withTransaction(db, () => {
       rows.forEach((row, index) => {
-        const vendorName = value(row.vendor, row.vendorName)
-        const skuName = value(row.sku, row.skuName)
-        const quantity = toNumber(row.quantity)
-        const unit = value(row.unit) || 'unit'
-        const occurredAt = value(row.invoiceDate) || new Date().toISOString()
+        const sourceRow = row as Record<string, unknown>
+        const vendorName = fieldValue(sourceRow, 'vendor', 'vendorName', 'vendorname', 'vendor_name')
+        const skuName = fieldValue(sourceRow, 'sku', 'skuName', 'skuname', 'sku_name')
+        const quantity = fieldNumber(sourceRow, ['quantity'])
+        const unit = fieldValue(sourceRow, 'unit') || 'unit'
+        const occurredAt = fieldValue(sourceRow, 'invoiceDate', 'invoicedate', 'invoice_date') || new Date().toISOString()
         if (!vendorName || !skuName || quantity <= 0) {
           errors += 1
           return
         }
 
-        const unitCost = toNumber(row.unitCost, row.totalCost ? toNumber(row.totalCost) / quantity : 0)
-        const externalId = value(row.invoiceNumber) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
+        const totalCost = fieldNumber(sourceRow, ['totalCost', 'totalcost', 'total_cost'])
+        const unitCost = fieldNumber(sourceRow, ['unitCost', 'unitcost', 'unit_cost'], totalCost > 0 ? totalCost / quantity : 0)
+        const externalId = fieldValue(sourceRow, 'invoiceNumber', 'invoicenumber', 'invoice_number') || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
         if (hasSourceDocument(db, sourceId, externalId, 'invoice')) return
 
         const vendorId = ensureVendor(db, vendorName)
         const skuId = ensureSku(db, { name: skuName, unit, category: value(row.category) || null })
-        ensureVendorItem(db, {
+        const vendorItemId = ensureVendorItem(db, {
           vendorId,
           skuId,
           packSize: quantity,
@@ -121,6 +133,13 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
           rawJson: row,
           contentHash: digest(row),
         })
+        if (unitCost > 0) {
+          db.prepare(
+            `INSERT OR IGNORE INTO vendor_item_prices
+             (vendor_item_id, vendor_id, sku_id, observed_at, pack_size, pack_unit, price, unit_cost, source_document_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(vendorItemId, vendorId, skuId, occurredAt, quantity, unit, unitCost * quantity, unitCost, documentId)
+        }
         const decisionId = createDecision(db, {
           title: `Apply invoice line ${externalId}: ${skuName}`,
           payload: {
@@ -186,10 +205,12 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
   try {
     withTransaction(db, () => {
       rows.forEach((row, index) => {
-        const skuName = value(row.sku, row.skuName)
-        const countedQuantity = toNumber(row.countedQuantity, toNumber(row.quantity))
-        const unit = value(row.unit) || 'unit'
-        const occurredAt = value(row.countedAt, row.occurredAt) || new Date().toISOString()
+        const sourceRow = row as Record<string, unknown>
+        const skuName = fieldValue(sourceRow, 'sku', 'skuName', 'skuname', 'sku_name')
+        const quantity = fieldNumber(sourceRow, ['quantity'])
+        const countedQuantity = fieldNumber(sourceRow, ['countedQuantity', 'countedquantity', 'counted_quantity'], quantity)
+        const unit = fieldValue(sourceRow, 'unit') || 'unit'
+        const occurredAt = fieldValue(sourceRow, 'countedAt', 'countedat', 'counted_at', 'occurredAt', 'occurredat', 'occurred_at') || new Date().toISOString()
         if (!skuName) {
           errors += 1
           return
@@ -198,7 +219,7 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
         const skuId = ensureSku(db, { name: skuName, unit })
         const before = getOnHand(db, skuId, occurredAt)
         const delta = countedQuantity - before
-        const externalId = value(row.countId) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
+        const externalId = fieldValue(sourceRow, 'countId', 'countid', 'count_id') || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
         if (hasSourceDocument(db, sourceId, externalId, 'count')) return
 
         const documentId = createSourceDocument(db, {
@@ -275,15 +296,17 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
   try {
     withTransaction(db, () => {
       rows.forEach((row, index) => {
-        const menuItemName = value(row.menuItem, row.menuItemName)
-        const quantitySold = toNumber(row.quantitySold, toNumber(row.quantity))
-        const occurredAt = value(row.occurredAt, row.businessDate) || new Date().toISOString()
+        const sourceRow = row as Record<string, unknown>
+        const menuItemName = fieldValue(sourceRow, 'menuItem', 'menuitem', 'menu_item', 'menuItemName', 'menuitemname', 'menu_item_name')
+        const quantity = fieldNumber(sourceRow, ['quantity'])
+        const quantitySold = fieldNumber(sourceRow, ['quantitySold', 'quantitysold', 'quantity_sold'], quantity)
+        const occurredAt = fieldValue(sourceRow, 'occurredAt', 'occurredat', 'occurred_at', 'businessDate', 'businessdate', 'business_date') || new Date().toISOString()
         if (!menuItemName || quantitySold <= 0) {
           errors += 1
           return
         }
 
-        const externalId = value(row.externalId) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
+        const externalId = fieldValue(sourceRow, 'externalId', 'externalid', 'external_id') || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
         if (hasSourceDocument(db, sourceId, externalId, 'toast_sale')) return
 
         const documentId = createSourceDocument(db, {
@@ -295,7 +318,7 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
           rawJson: row,
           contentHash: digest(row),
         })
-        const menuItemId = ensureMenuItem(db, menuItemName, row.externalId ?? null)
+        const menuItemId = ensureMenuItem(db, menuItemName, externalId)
         const recipes = db.prepare('SELECT sku_id, quantity, unit, yield_quantity FROM recipes WHERE menu_item_id = ? AND active = 1').all(menuItemId)
         if (recipes.length === 0) {
           const decisionId = createDecision(db, {

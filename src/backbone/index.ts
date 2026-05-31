@@ -270,29 +270,59 @@ const calibrationFor = (db: Db, skuId: number): Calibration => {
   }
 }
 
-const cheapestVendorCost = (db: Db, skuId: number): VendorCost | null => {
+const cheapestVendorCost = (db: Db, skuId: number, asOf: string): VendorCost | null => {
   const row = db
     .prepare(
       `SELECT v.name AS vendor_name,
-              vi.pack_size,
-              vi.price,
-              vi.lead_time_days
+              vi.pack_size AS catalog_pack_size,
+              vi.price AS catalog_price,
+              vi.lead_time_days,
+              observed.pack_size AS observed_pack_size,
+              observed.price AS observed_price,
+              observed.unit_cost AS observed_unit_cost,
+              EXISTS (
+                SELECT 1
+                FROM vendor_item_prices vip_any
+                WHERE vip_any.vendor_item_id = vi.id
+              ) AS has_price_observations
        FROM vendor_items vi
        JOIN vendors v ON v.id = vi.vendor_id
+       LEFT JOIN vendor_item_prices observed
+         ON observed.id = (
+           SELECT vip.id
+           FROM vendor_item_prices vip
+           WHERE vip.vendor_item_id = vi.id
+             AND vip.observed_at <= ?
+           ORDER BY vip.observed_at DESC, vip.id DESC
+           LIMIT 1
+         )
        WHERE vi.sku_id = ? AND vi.active = 1
        ORDER BY
-         CASE WHEN vi.price IS NULL THEN 1 ELSE 0 END,
-         (vi.price / NULLIF(vi.pack_size, 0)),
+         CASE
+           WHEN observed.unit_cost IS NOT NULL THEN 0
+           WHEN has_price_observations = 0 AND vi.price IS NOT NULL THEN 0
+           ELSE 1
+         END,
+         COALESCE(
+           observed.unit_cost,
+           CASE WHEN has_price_observations = 0 THEN vi.price / NULLIF(vi.pack_size, 0) END
+         ),
          vi.lead_time_days
        LIMIT 1`,
     )
-    .get(skuId)
+    .get(asOf, skuId)
   if (!row) return null
-  const packSize = Math.max(1, toNumber(row.pack_size, 1))
-  const price = row.price === null ? null : toNumber(row.price)
+  const hasPriceObservations = toNumber(row.has_price_observations) > 0
+  const observedPackSize = row.observed_pack_size === null || row.observed_pack_size === undefined ? null : toNumber(row.observed_pack_size)
+  const catalogPackSize = toNumber(row.catalog_pack_size, 1)
+  const packSize = Math.max(1, observedPackSize ?? catalogPackSize)
+  const observedPrice = row.observed_price === null || row.observed_price === undefined ? null : toNumber(row.observed_price)
+  const catalogPrice = row.catalog_price === null || row.catalog_price === undefined ? null : toNumber(row.catalog_price)
+  const price = observedPrice ?? (hasPriceObservations ? null : catalogPrice)
+  const observedUnitCost = row.observed_unit_cost === null || row.observed_unit_cost === undefined ? null : toNumber(row.observed_unit_cost)
   return {
     vendorName: toStringValue(row.vendor_name),
-    unitCost: price === null ? null : price / packSize,
+    unitCost: observedUnitCost ?? (price === null ? null : price / packSize),
     packSize,
     price,
     leadTimeDays: Math.max(1, toNumber(row.lead_time_days, 2)),
@@ -603,7 +633,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
           fallbackDailyUsage: baselineDailyUsage,
         })
         const avgDailyUsage = Math.max(0, projectedUsage.dailyUsage)
-        const vendorCost = cheapestVendorCost(db, position.skuId)
+        const vendorCost = cheapestVendorCost(db, position.skuId, resolved.asOf)
         const latestCost = latestPurchaseCost(db, position.skuId, resolved.asOf)
         const highHistoricalCost = highHistoricalPurchaseCost(db, position.skuId, resolved.asOf)
         const countAge = latestCountAgeDays(db, position.skuId, resolved.asOf)

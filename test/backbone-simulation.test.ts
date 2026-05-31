@@ -298,6 +298,9 @@ describe('Backbone prediction model', () => {
 
     expect(evidence.latestCost).toBe(0.02)
     expect(evidence.highHistoricalCost).toBe(0.02)
+    expect(evidence.vendorCost.unitCost).toBe(0.02)
+    expect(evidence.vendorCost.price).toBe(40)
     expect(evidence.countAgeDays).toBeNull()
+    expect(db.prepare('SELECT COUNT(*) AS count FROM vendor_item_prices WHERE sku_id = ?').get(skuId)?.count).toBe(2)
   })
 })

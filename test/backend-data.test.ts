@@ -41,6 +41,7 @@ describe('backend data slice', () => {
         'vendors',
         'skus',
         'vendor_items',
+        'vendor_item_prices',
         'menu_items',
         'recipes',
         'inventory_events',
@@ -91,6 +92,7 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(toast.recordsImported).toBe(1)
     expect(count.recordsImported).toBe(1)
     expect(db.prepare('SELECT COUNT(*) AS count FROM evidence_items').get()?.count).toBeGreaterThanOrEqual(8)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM vendor_item_prices').get()?.count).toBeGreaterThanOrEqual(1)
 
     const skuId = ensureSku(db, { name: 'House Vodka 1L', unit: 'ml' })
     const position = getInventoryPosition(db, skuId, { asOf: '2026-05-11T16:00:00.000Z' })
