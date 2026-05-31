@@ -18,6 +18,7 @@ type ParsedOptions = {
   env?: string
   asOf?: string
   horizonDays?: number
+  horizons?: number[]
   usageWindowDays?: number
   trainingDays?: number
   cycles?: number
@@ -68,6 +69,19 @@ type AccuracySummary = {
   latestFeedback: string
 }
 
+type HorizonRun = {
+  horizonDays: number
+  predictions: Array<{
+    skuName: string
+    unit: string
+    predictedOnHand: number
+    predictedDaysRemaining: number | null
+    lowStockRisk: string
+    confidence: number
+    costSignal: string
+  }>
+}
+
 type PredictionEvidence = {
   positionWarningState?: string
   countAgeDays?: number | null
@@ -104,6 +118,40 @@ export const backboneRun = async (args: string[], context: CommandContext): Prom
     })
     context.terminal.success(`Backbone run ${result.runId} completed.`)
     renderRun(result, context)
+  })
+}
+
+export const backbonePlan = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const horizons = options.horizons ?? [1, 7, 14, 30]
+  context.terminal.title('Backbone horizon plan')
+
+  await withBackendDb(context.config, async (db: any) => {
+    const runs = horizons.map((horizonDays) =>
+      runBackboneModel(db, {
+        asOf: options.asOf,
+        horizonDays,
+        usageWindowDays: options.usageWindowDays,
+        mode: 'live',
+      }),
+    )
+
+    context.terminal.section('Horizon summary')
+    context.terminal.table(
+      runs.map((run) => ({
+        horizon: `${run.horizonDays}d`,
+        runId: run.runId,
+        predictions: run.predictionCount,
+        critical: run.predictedStockouts,
+        lowStock: run.lowStockCount,
+        costOptions: run.costCuttingOptions,
+        feedback: run.feedbackItems,
+        calibrated: run.calibratedSkus,
+      })),
+    )
+
+    context.terminal.section('Escalating risks')
+    context.terminal.table(buildHorizonRiskRows(runs))
   })
 }
 
@@ -338,6 +386,51 @@ const latestPredictionRow = (db: Db, sku?: string): any | null => {
        LIMIT 1`,
     )
     .get(...params)
+}
+
+const horizonRiskRank: Record<string, number> = {
+  ok: 0,
+  watch: 1,
+  low: 2,
+  high: 3,
+  critical: 4,
+}
+
+const buildHorizonRiskRows = (runs: HorizonRun[]): Array<Record<string, unknown>> => {
+  const bySku = new Map<string, Array<HorizonRun['predictions'][number] & { horizonDays: number }>>()
+  for (const run of runs) {
+    for (const prediction of run.predictions) {
+      const rows = bySku.get(prediction.skuName) ?? []
+      rows.push({ ...prediction, horizonDays: run.horizonDays })
+      bySku.set(prediction.skuName, rows)
+    }
+  }
+
+  return Array.from(bySku.entries())
+    .map(([sku, predictions]) => {
+      const sorted = predictions.sort((left, right) => left.horizonDays - right.horizonDays)
+      const worst = sorted.reduce((current, prediction) =>
+        (horizonRiskRank[prediction.lowStockRisk] ?? 0) > (horizonRiskRank[current.lowStockRisk] ?? 0) ? prediction : current,
+      )
+      const firstNonOk = sorted.find((prediction) => prediction.lowStockRisk !== 'ok')
+      const latest = sorted[sorted.length - 1] ?? worst
+      return {
+        sku,
+        firstRisk: firstNonOk ? `${firstNonOk.lowStockRisk}@${firstNonOk.horizonDays}d` : 'none',
+        worstRisk: `${worst.lowStockRisk}@${worst.horizonDays}d`,
+        finalPredicted: `${latest.predictedOnHand} ${latest.unit}`,
+        daysRemaining: latest.predictedDaysRemaining ?? '',
+        confidence: latest.confidence,
+        cost: sorted.find((prediction) => prediction.costSignal !== 'none')?.costSignal ?? 'none',
+      }
+    })
+    .filter((row) => row.firstRisk !== 'none' || row.cost !== 'none')
+    .sort((left, right) => {
+      const leftRisk = String(left.worstRisk).split('@')[0]
+      const rightRisk = String(right.worstRisk).split('@')[0]
+      return (horizonRiskRank[rightRisk] ?? 0) - (horizonRiskRank[leftRisk] ?? 0)
+    })
+    .slice(0, 15)
 }
 
 const withBackboneTargetDb = async <T>(
@@ -1081,6 +1174,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--horizon-days' && next) {
       parsed.horizonDays = positiveNumber(next, '--horizon-days')
+      index += 1
+    } else if (arg === '--horizons' && next) {
+      parsed.horizons = next.split(',').map((value) => positiveNumber(value.trim(), '--horizons'))
       index += 1
     } else if (arg === '--usage-window-days' && next) {
       parsed.usageWindowDays = positiveNumber(next, '--usage-window-days')

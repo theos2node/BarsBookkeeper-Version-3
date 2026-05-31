@@ -107,6 +107,7 @@ process.exit(1)
     await expectCliOk(['toast', 'pull', '--file', join(fixturesDir, 'smoke-toast.json')], dataDir)
     await expectCliOk(['brain', 'run'], dataDir)
     await expectCliOk(['backbone', 'run'], dataDir)
+    const backbonePlan = await expectCliOk(['backbone', 'plan', '--horizons', '1,7,14'], dataDir)
     const listenOutput = await expectCliOk(
       [
         'backbone',
@@ -154,6 +155,9 @@ process.exit(1)
     expect(consoleOutput).toContain('Open order recommendations')
     expect(initialDoctor).toContain('Backbone')
     expect(initialDoctor).toContain('no completed Backbone run yet')
+    expect(backbonePlan).toContain('Backbone horizon plan')
+    expect(backbonePlan).toContain('Horizon summary')
+    expect(backbonePlan).toContain('Escalating risks')
     expect(listenOutput).toContain('Backbone listener stopped after 2 cycles')
     expect(listenOutput).toContain('file:')
     expect(resilientListenOutput).toContain('OpenClaw skipped this cycle: simulated_openclaw_failure')

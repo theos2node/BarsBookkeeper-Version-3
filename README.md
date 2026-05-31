@@ -62,6 +62,7 @@ The Backbone model is the terminal-first prediction layer. It listens to the sam
 
 ```sh
 npm run bbk -- backbone run --horizon-days 7
+npm run bbk -- backbone plan --horizons 1,7,14,30
 npm run bbk -- backbone status
 npm run bbk -- backbone actions
 npm run bbk -- backbone accuracy
@@ -71,6 +72,8 @@ npm run bbk -- backbone envs
 ```
 
 `bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals.
+
+`bbk backbone plan` runs the model across multiple horizons and summarizes which bottles become risky first, so ordering can move before a low-stock item becomes urgent.
 
 `bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
 

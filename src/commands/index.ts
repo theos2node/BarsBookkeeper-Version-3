@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAccuracy, backboneActions, backboneAudit, backboneEnvs, backboneExplain, backboneListen, backboneMatrix, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneAccuracy, backboneActions, backboneAudit, backboneEnvs, backboneExplain, backboneListen, backboneMatrix, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -72,6 +72,12 @@ export const createCommands = (
     usage: 'bbk backbone status',
     summary: 'Show the latest Backbone prediction run.',
     handler: backboneStatus,
+  },
+  {
+    path: ['backbone', 'plan'],
+    usage: 'bbk backbone plan [--horizons 1,7,14,30]',
+    summary: 'Run and compare Backbone predictions across multiple planning horizons.',
+    handler: backbonePlan,
   },
   {
     path: ['backbone', 'audit'],
