@@ -382,6 +382,7 @@ export const backboneMaintainService = async (args: string[], context: CommandCo
   const stdoutPath = resolve(logDir, 'backbone-maintenance.out.log')
   const stderrPath = resolve(logDir, 'backbone-maintenance.err.log')
   const workingDirectory = resolve(context.cwd)
+  const maintainArgs = buildScheduledMaintenanceArgs(options)
 
   context.terminal.title('Backbone maintenance launchd service')
   await mkdir(serviceDir, { recursive: true })
@@ -394,6 +395,7 @@ export const backboneMaintainService = async (args: string[], context: CommandCo
     intervalMs,
     stdoutPath,
     stderrPath,
+    maintainArgs,
   })
   await writeFile(plistPath, plist, 'utf8')
 
@@ -406,6 +408,7 @@ export const backboneMaintainService = async (args: string[], context: CommandCo
     dataDir: context.config.dataDir,
     stdoutPath,
     stderrPath,
+    maintainArgs: maintainArgs.join(' '),
   })
   context.terminal.section('Install commands')
   context.terminal.line(`mkdir -p "$HOME/Library/LaunchAgents"`)
@@ -1656,6 +1659,7 @@ const renderMaintenanceLaunchdPlist = (input: {
   intervalMs: number
   stdoutPath: string
   stderrPath: string
+  maintainArgs: string[]
 }): string => {
   const intervalSeconds = Math.max(60, Math.round(input.intervalMs / 1000))
   const args = [
@@ -1666,6 +1670,7 @@ const renderMaintenanceLaunchdPlist = (input: {
     '--',
     'backbone',
     'maintain',
+    ...input.maintainArgs,
   ]
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1697,6 +1702,22 @@ ${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
 </dict>
 </plist>
 `
+}
+
+const buildScheduledMaintenanceArgs = (options: ParsedOptions): string[] => {
+  const args: string[] = []
+  if (options.runVerify) args.push('--verify')
+  if (options.scenario) args.push('--scenario', options.scenario)
+  if (options.days !== undefined) args.push('--days', String(options.days))
+  if (options.countCadenceDays !== undefined) args.push('--count-cadence-days', String(options.countCadenceDays))
+  if (options.horizonDays !== undefined) args.push('--horizon-days', String(options.horizonDays))
+  if (options.warmupDays !== undefined) args.push('--warmup-days', String(options.warmupDays))
+  if (options.trainingDays !== undefined) args.push('--training-days', String(options.trainingDays))
+  if (options.maxAgeMinutes !== undefined) args.push('--max-age-minutes', String(options.maxAgeMinutes))
+  if (options.maxRunAgeMinutes !== undefined) args.push('--max-run-age-minutes', String(options.maxRunAgeMinutes))
+  if (options.maxCountAgeDays !== undefined) args.push('--max-count-age-days', String(options.maxCountAgeDays))
+  if (options.limit !== undefined) args.push('--limit', String(options.limit))
+  return args
 }
 
 const xmlEscape = (value: string): string =>

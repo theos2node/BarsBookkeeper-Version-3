@@ -142,9 +142,10 @@ For unattended Mac mini operation, generate a user LaunchAgent plist:
 ```sh
 npm run bbk -- backbone service --interval-ms 300000
 npm run bbk -- backbone maintain-service --interval-ms 86400000
+npm run bbk -- backbone maintain-service --interval-ms 86400000 --verify --scenario shrink --days 60 --count-cadence-days 30
 ```
 
-The commands write plist and log paths under `data/`, then print the exact `launchctl` install commands. The listener service runs continuously and refreshes predictions; the maintenance service runs `bbk backbone maintain` on a fixed interval. Neither plist embeds Toast or API secrets; use `bbk toast connect` and the normal environment/config files for credentials.
+The commands write plist and log paths under `data/`, then print the exact `launchctl` install commands. The listener service runs continuously and refreshes predictions; the maintenance service runs `bbk backbone maintain` on a fixed interval and can include `--verify` plus scenario/cadence flags for scheduled isolated accuracy drills. Neither plist embeds Toast or API secrets; use `bbk toast connect` and the normal environment/config files for credentials.
 
 Every listener cycle is written to `backbone_listener_cycles`, including Toast status, OpenClaw review count, Backbone run ID, prediction count, low-stock count, feedback count, and any failure message. On startup, the listener marks stale abandoned `running` cycles as failed before starting a new cycle; use `--recover-stale-minutes` to tune that recovery window. OpenClaw review failures are journaled as warnings without stopping the Backbone model run, so prediction refreshes can continue even when the review layer is degraded. `bbk backbone status` includes the latest listener health rows so restart/debug state is available from the terminal.
 

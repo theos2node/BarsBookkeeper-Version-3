@@ -121,7 +121,10 @@ process.exit(1)
     const backboneRun = await expectCliOk(['backbone', 'run'], dataDir)
     const backbonePlan = await expectCliOk(['backbone', 'plan', '--horizons', '1,7,14'], dataDir)
     const backboneService = await expectCliOk(['backbone', 'service', '--interval-ms', '1000', '--label', 'com.barsbookkeeper.test'], dataDir)
-    const backboneMaintainService = await expectCliOk(['backbone', 'maintain-service', '--interval-ms', '60000', '--label', 'com.barsbookkeeper.test-maintenance'], dataDir)
+    const backboneMaintainService = await expectCliOk(
+      ['backbone', 'maintain-service', '--interval-ms', '60000', '--label', 'com.barsbookkeeper.test-maintenance', '--verify', '--scenario', 'shrink', '--days', '60', '--count-cadence-days', '30'],
+      dataDir,
+    )
     const listenOutput = await expectCliOk(
       [
         'backbone',
@@ -198,6 +201,7 @@ process.exit(1)
     expect(backboneMaintainService).toContain('Backbone maintenance launchd service')
     expect(backboneMaintainService).toContain('com.barsbookkeeper.test-maintenance')
     expect(backboneMaintainService).toContain('startIntervalSeconds: 60')
+    expect(backboneMaintainService).toContain('maintainArgs: --verify --scenario shrink --days 60 --count-cadence-days 30')
     expect(backboneMaintainService).toContain('launchctl load')
     expect(listenOutput).toContain('Backbone listener stopped after 2 cycles')
     expect(listenOutput).toContain('listener lock acquired')
@@ -359,6 +363,10 @@ process.exit(1)
     expect(maintenancePlist).toContain('<integer>60</integer>')
     expect(maintenancePlist).toContain('<string>backbone</string>')
     expect(maintenancePlist).toContain('<string>maintain</string>')
+    expect(maintenancePlist).toContain('<string>--verify</string>')
+    expect(maintenancePlist).toContain('<string>--scenario</string>')
+    expect(maintenancePlist).toContain('<string>shrink</string>')
+    expect(maintenancePlist).toContain('<string>--count-cadence-days</string>')
     expect(maintenancePlist).toContain('backbone-maintenance.out.log')
     expect(maintenancePlist).not.toContain('<key>KeepAlive</key>')
     expect(maintenancePlist).not.toContain('TOAST_API_KEY')

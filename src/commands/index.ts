@@ -123,7 +123,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'maintain-service'],
-    usage: 'bbk backbone maintain-service [--interval-ms <ms>] [--label <launchd-label>]',
+    usage: 'bbk backbone maintain-service [--interval-ms <ms>] [--label <launchd-label>] [--verify] [--scenario <name>] [--days <n>] [--count-cadence-days <n>]',
     summary: 'Write a macOS launchd plist for scheduled Backbone maintenance.',
     handler: backboneMaintainService,
   },
