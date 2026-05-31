@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { parseJson, toNumber, toStringValue } from '../db/database.js'
+import { ingestInventoryNotes } from '../ingest/notes.js'
 import { mapToastRecipeAndBackfill } from '../ingest/recipes.js'
 import { OperatorInputError, runServiceCommand, requirePathArg } from './service-command.js'
 import { BackendUnavailableError, callBackend, withBackendDb } from './backend.js'
@@ -28,6 +29,38 @@ export const ingestCount = async (args: string[], context: CommandContext): Prom
     withDb: true,
     args: async (rawArgs, ctx, { db }) => [db, await readFile(requirePathArg(rawArgs, 'count', ctx), 'utf8')],
   })
+
+export const ingestNote = async (args: string[], context: CommandContext): Promise<void> => {
+  const parsed = await parseNoteArgs(args, context)
+  context.terminal.title('Ingest inventory note')
+
+  await withBackendDb(context.config, async (db: any) => {
+    const result = ingestInventoryNotes(db, parsed.text, {
+      occurredAt: parsed.occurredAt,
+      dryRun: parsed.dryRun,
+    })
+
+    context.terminal.dump({
+      dryRun: parsed.dryRun,
+      occurredAt: parsed.occurredAt ?? '',
+      parsedRows: result.rows.length,
+      skipped: result.skipped.length,
+      recordsImported: result.ingest?.recordsImported ?? 0,
+      errors: result.ingest?.errors ?? 0,
+    })
+    context.terminal.section('Parsed sparse counts')
+    context.terminal.table(result.rows)
+    if (result.skipped.length > 0) {
+      context.terminal.section('Skipped note fragments')
+      context.terminal.table(result.skipped)
+    }
+    if (!parsed.dryRun && result.ingest) {
+      context.terminal.success(`Inventory note imported ${result.ingest.recordsImported} sparse count${result.ingest.recordsImported === 1 ? '' : 's'}.`)
+    } else if (parsed.dryRun) {
+      context.terminal.warn('Dry run only; rerun without --dry-run to ingest parsed counts.')
+    }
+  })
+}
 
 export const toastConnect = async (args: string[], context: CommandContext): Promise<void> =>
   runServiceCommand(args, context, {
@@ -192,6 +225,44 @@ const reviewAction = async (
   }
   context.terminal.subtitle(`backend: ${call.module} -> ${call.exportName}`)
   context.terminal.dump(call.result)
+}
+
+const parseNoteArgs = async (
+  args: string[],
+  context: CommandContext,
+): Promise<{ text: string; occurredAt?: string; dryRun: boolean }> => {
+  const values: string[] = []
+  let file: string | undefined
+  let occurredAt: string | undefined
+  let dryRun = false
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const next = args[index + 1]
+    if (arg === '--file' && next) {
+      file = next
+      index += 1
+    } else if (arg === '--as-of' && next) {
+      occurredAt = next
+      index += 1
+    } else if (arg === '--dry-run') {
+      dryRun = true
+    } else {
+      values.push(arg)
+    }
+  }
+
+  const text = file
+    ? await readFile(requirePathArg([file], 'note', context), 'utf8')
+    : values.join(' ').trim()
+
+  if (!text) {
+    throw new OperatorInputError(
+      'Missing inventory note text.',
+      'usage: bbk ingest note "<sku> <qty> bottles; <sku> <qty> ml" [--as-of <iso>] [--dry-run] OR bbk ingest note --file <path>',
+    )
+  }
+  return { text, occurredAt, dryRun }
 }
 
 const renderReviewRows = (result: unknown, context: CommandContext): void => {

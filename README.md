@@ -36,7 +36,10 @@ CSV ingest examples:
 ```sh
 npm run bbk -- ingest invoice ./samples/invoice.csv
 npm run bbk -- ingest count ./samples/count.csv
+npm run bbk -- ingest note "House Vodka 1L 4.5 bottles; Lime Juice 1250 ml" --dry-run
 ```
+
+`bbk ingest note` turns rough manager inventory notes into sparse count evidence for Backbone. Bottle counts use the active vendor pack size for the matched SKU, so `4.5 bottles` of a 1L vodka becomes `4500 ml`; run with `--dry-run` first to preview fuzzy SKU matches and skipped fragments.
 
 Operational commands reserved for live integrations:
 

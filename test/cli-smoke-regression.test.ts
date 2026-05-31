@@ -105,6 +105,17 @@ process.exit(1)
     await expectCliOk(['seed-demo'], dataDir)
     await expectCliOk(['ingest', 'invoice', join(fixturesDir, 'smoke-invoice.csv')], dataDir)
     await expectCliOk(['ingest', 'count', join(fixturesDir, 'smoke-count.csv')], dataDir)
+    const ingestNotePreview = await expectCliOk(
+      [
+        'ingest',
+        'note',
+        'House Vodka 1L 4.5 bottles; Lime Juice 1250 ml',
+        '--as-of',
+        '2026-05-11T16:00:00.000Z',
+        '--dry-run',
+      ],
+      dataDir,
+    )
     await expectCliOk(['toast', 'pull', '--file', join(fixturesDir, 'smoke-toast.json')], dataDir)
     await expectCliOk(['brain', 'run'], dataDir)
     const backboneRun = await expectCliOk(['backbone', 'run'], dataDir)
@@ -278,6 +289,12 @@ process.exit(1)
     expect(backboneTrust).toContain('Next actions')
     expect(backboneTrust).toContain('verification')
     expect(backboneTrust).toContain('uncertainty risk')
+    expect(ingestNotePreview).toContain('Ingest inventory note')
+    expect(ingestNotePreview).toContain('dryRun: true')
+    expect(ingestNotePreview).toContain('parsedRows: 2')
+    expect(ingestNotePreview).toContain('House Vodka 1L')
+    expect(ingestNotePreview).toContain('4500')
+    expect(ingestNotePreview).toContain('Dry run only')
     expect(backboneTrust).toContain('latestMaintenance')
     expect(backboneMaintainHistory).toContain('Backbone maintenance history')
     expect(backboneMaintainHistory).toContain('smoke-main')

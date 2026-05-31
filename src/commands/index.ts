@@ -1,4 +1,4 @@
-import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
+import { brainRun, forecastRun, ingestCount, ingestInvoice, ingestNote, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
 import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMaintainHistory, backboneMaintainService, backboneMatrix, backboneMemory, backbonePlan, backboneRecipeSuggestions, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneTrust, backboneVerify, backboneVerifyHistory } from './backbone.js'
@@ -42,6 +42,12 @@ export const createCommands = (
     usage: 'bbk ingest count <path>',
     summary: 'Import an inventory count file.',
     handler: ingestCount,
+  },
+  {
+    path: ['ingest', 'note'],
+    usage: 'bbk ingest note "<sku> <qty> bottles; <sku> <qty> ml" [--as-of <iso>] [--dry-run] OR bbk ingest note --file <path>',
+    summary: 'Parse rough manager inventory notes into sparse count evidence.',
+    handler: ingestNote,
   },
   {
     path: ['toast', 'connect'],

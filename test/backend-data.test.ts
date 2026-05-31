@@ -9,6 +9,7 @@ import { ensureSku } from '../src/db/repositories.js'
 import { seedDemoData } from '../src/db/seed.js'
 import { generateForecasts } from '../src/forecast/index.js'
 import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
+import { ingestInventoryNotes, parseInventoryNotes } from '../src/ingest/notes.js'
 import { mapToastRecipeAndBackfill, suggestToastRecipeMappings } from '../src/ingest/recipes.js'
 import { generateVendorGroupedOrderRecommendations } from '../src/orders/index.js'
 
@@ -94,6 +95,43 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     const skuId = ensureSku(db, { name: 'House Vodka 1L', unit: 'ml' })
     const position = getInventoryPosition(db, skuId, { asOf: '2026-05-11T16:00:00.000Z' })
     expect(position?.onHand).toBe(5200)
+  })
+
+  it('parses rough manager notes into sparse count evidence', () => {
+    seedDemoData(db, asOf)
+
+    const parsed = parseInventoryNotes(db, 'House Vodka 1L 4.5 bottles; Lime Juice 1250 ml; mystery shelf maybe', {
+      occurredAt: '2026-05-11T15:30:00.000Z',
+    })
+
+    expect(parsed.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sku: 'House Vodka 1L',
+          countedQuantity: 4500,
+          unit: 'ml',
+          occurredAt: '2026-05-11T15:30:00.000Z',
+        }),
+        expect.objectContaining({
+          sku: 'Lime Juice',
+          countedQuantity: 1250,
+          unit: 'ml',
+          occurredAt: '2026-05-11T15:30:00.000Z',
+        }),
+      ]),
+    )
+    expect(parsed.skipped).toEqual([{ text: 'mystery shelf maybe', reason: 'could not parse quantity/unit' }])
+
+    const imported = ingestInventoryNotes(db, 'House Vodka 1L 4.5 bottles', {
+      occurredAt: '2026-05-11T16:00:00.000Z',
+    })
+    expect(imported.ingest?.recordsImported).toBe(1)
+    expect(imported.ingest?.errors).toBe(0)
+
+    const skuId = ensureSku(db, { name: 'House Vodka 1L', unit: 'ml' })
+    expect(getInventoryPosition(db, skuId, { asOf: '2026-05-11T16:30:00.000Z' })?.onHand).toBe(4500)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'count' AND external_id LIKE 'NOTE-%'").get()?.count).toBe(1)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM evidence_items WHERE evidence_type = 'inventory_count'").get()?.count).toBe(1)
   })
 
   it('applies and reverses OpenClaw decisions as auditable inventory events', () => {
