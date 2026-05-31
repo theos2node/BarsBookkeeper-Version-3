@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
-import { openDatabase, parseJson, toNumber, type Db } from '../db/database.js'
+import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
 import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel } from '../backbone/index.js'
 import {
@@ -1231,6 +1231,7 @@ export const backboneVerify = async (args: string[], context: CommandContext): P
   const options = parseOptions(args)
   const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
   const prefix = options.env ?? `verify-${new Date().toISOString().replace(/[:.]/g, '-')}`
+  const startedAt = new Date().toISOString()
 
   context.terminal.title('Backbone verification gate')
   context.terminal.subtitle(`scenarios: ${scenarios.join(', ')}`)
@@ -1301,8 +1302,60 @@ export const backboneVerify = async (args: string[], context: CommandContext): P
   )
 
   const failed = results.filter(({ validation, rolling }) => !validation.result.passed || !rolling.result.passed)
+  await persistVerificationResult(context, {
+    startedAt,
+    status: failed.length > 0 ? 'failed' : 'passed',
+    scenarios,
+    options,
+    results,
+  })
   if (failed.length > 0) throw new Error(`backbone_verify_failed:${failed.map(({ scenario }) => scenario).join(',')}`)
   context.terminal.success(`Backbone verification passed ${results.length}/${results.length} scenario${results.length === 1 ? '' : 's'}.`)
+}
+
+export const backboneVerifyHistory = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const limit = options.limit ?? 10
+  context.terminal.title('Backbone verification history')
+
+  await withBackendDb(context.config, async (db: any) => {
+    const rows = db
+      .prepare(
+        `SELECT *
+         FROM backbone_verifications
+         ORDER BY completed_at DESC, id DESC
+         LIMIT ?`,
+      )
+      .all(limit)
+
+    if (rows.length === 0) {
+      context.terminal.warn('No Backbone verification runs have been recorded yet.')
+      context.terminal.subtitle('Run `bbk backbone verify --env <prefix>`.')
+      return
+    }
+
+    context.terminal.table(
+      rows.map((row: any) => {
+        const summary = parseJson<{
+          worstValidationBottleMae?: number
+          worstRollingBottleMae?: number
+          maxRollingBottleError?: number
+          minRollingLowStockRecall?: number
+        }>(row.summary_json, {})
+        return {
+          id: row.id,
+          status: row.status,
+          completed: row.completed_at,
+          scenarios: `${row.passed_scenarios}/${row.scenario_count}`,
+          failed: row.failed_scenarios,
+          validationMae: summary.worstValidationBottleMae ?? '',
+          rollingMae: summary.worstRollingBottleMae ?? '',
+          maxBottleError: summary.maxRollingBottleError ?? '',
+          lowStockRecall: summary.minRollingLowStockRecall ?? '',
+        }
+      }),
+    )
+  })
 }
 
 export const backboneMatrix = async (args: string[], context: CommandContext): Promise<void> => {
@@ -1390,6 +1443,83 @@ const runVerificationSandbox = async <T extends { passed: boolean }>(
   } finally {
     db.close()
   }
+}
+
+const persistVerificationResult = async (
+  context: CommandContext,
+  input: {
+    startedAt: string
+    status: 'passed' | 'failed'
+    scenarios: BackboneSimulationScenario[]
+    options: ParsedOptions
+    results: Array<{
+      scenario: BackboneSimulationScenario
+      validation: { envName: string; envDbPath: string; result: ReturnType<typeof runBackboneAccuracySimulation> }
+      rolling: { envName: string; envDbPath: string; result: ReturnType<typeof runBackboneRollingBacktest> }
+    }>
+  },
+): Promise<void> => {
+  const failedScenarios = input.results.filter(({ validation, rolling }) => !validation.result.passed || !rolling.result.passed)
+  const summary = {
+    scenarios: input.results.map(({ scenario, validation, rolling }) => ({
+      scenario,
+      validation: {
+        env: validation.envName,
+        passed: validation.result.passed,
+        bottleMae: validation.result.bottleMae,
+        maxBottleError: validation.result.maxBottleError,
+        lowStockRecall: validation.result.lowStockRecall,
+        lowStockPrecision: validation.result.lowStockPrecision,
+        costCuttingOptions: validation.result.costCuttingOptions,
+        feedbackItems: validation.result.feedbackItems,
+        calibratedSkus: validation.result.calibratedSkus,
+      },
+      rolling: {
+        env: rolling.envName,
+        passed: rolling.result.passed,
+        runCount: rolling.result.runCount,
+        evaluatedPredictions: rolling.result.evaluatedPredictions,
+        countSnapshots: rolling.result.countSnapshots,
+        bottleMae: rolling.result.bottleMae,
+        maxBottleError: rolling.result.maxBottleError,
+        lowStockRecall: rolling.result.lowStockRecall,
+        lowStockPrecision: rolling.result.lowStockPrecision,
+        costCuttingOptions: rolling.result.costCuttingOptions,
+        shrinkSignals: rolling.result.shrinkSignals,
+        feedbackItems: rolling.result.feedbackItems,
+        calibratedSkus: rolling.result.calibratedSkus,
+      },
+    })),
+    worstValidationBottleMae: round(Math.max(0, ...input.results.map(({ validation }) => validation.result.bottleMae)), 3),
+    worstRollingBottleMae: round(Math.max(0, ...input.results.map(({ rolling }) => rolling.result.bottleMae)), 3),
+    maxRollingBottleError: round(Math.max(0, ...input.results.map(({ rolling }) => rolling.result.maxBottleError)), 3),
+    minRollingLowStockRecall: round(Math.min(...input.results.map(({ rolling }) => rolling.result.lowStockRecall)), 3),
+  }
+
+  await withBackendDb(context.config, async (db: any) => {
+    db.prepare(
+      `INSERT INTO backbone_verifications
+       (started_at, completed_at, status, scenario_count, passed_scenarios, failed_scenarios, options_json, summary_json)
+       VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.startedAt,
+      input.status,
+      input.results.length,
+      input.results.length - failedScenarios.length,
+      failedScenarios.length,
+      stringifyJson({
+        scenarios: input.scenarios,
+        env: input.options.env,
+        asOf: input.options.asOf,
+        days: input.options.days,
+        horizonDays: input.options.horizonDays,
+        countCadenceDays: input.options.countCadenceDays,
+        warmupDays: input.options.warmupDays,
+        trainingDays: input.options.trainingDays,
+      }),
+      stringifyJson(summary),
+    )
+  })
 }
 
 const buildBackboneAudit = (

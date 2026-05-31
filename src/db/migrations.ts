@@ -315,6 +315,27 @@ const migrations: Migration[] = [
       );
     `,
   },
+  {
+    id: 6,
+    name: 'backbone_verification_history',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL CHECK (status IN ('passed', 'failed')),
+        scenario_count INTEGER NOT NULL DEFAULT 0,
+        passed_scenarios INTEGER NOT NULL DEFAULT 0,
+        failed_scenarios INTEGER NOT NULL DEFAULT 0,
+        options_json TEXT NOT NULL DEFAULT '{}',
+        summary_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_verifications_completed ON backbone_verifications(completed_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_verifications_status ON backbone_verifications(status);
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {
