@@ -66,6 +66,7 @@ npm run bbk -- backbone plan --horizons 1,7,14,30
 npm run bbk -- backbone status
 npm run bbk -- backbone actions
 npm run bbk -- backbone accuracy
+npm run bbk -- backbone memory
 npm run bbk -- backbone explain --sku "Backbone Vodka 1L"
 npm run bbk -- backbone audit
 npm run bbk -- backbone envs
@@ -77,6 +78,8 @@ npm run bbk -- backbone env-prune --older-than-days 14
 `bbk backbone plan` runs the model across multiple horizons and summarizes which bottles become risky first, so ordering can move before a low-stock item becomes urgent.
 
 `bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
+
+`bbk backbone memory` shows what the model has learned from scored counts: SKU-level correction direction, bottle error, confidence adjustment, recent feedback, and current low-stock or cost risks that still lack calibration memory. Add `--env <name>` to inspect a sandbox.
 
 `bbk backbone explain` opens the evidence behind a prediction: projection method, count age, vendor costs, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
 
@@ -104,6 +107,7 @@ npm run bbk -- backbone simulate --env shrink-month --scenario shrink --days 30
 npm run bbk -- backbone simulate --env weekend-swing --scenario volatile --days 30
 npm run bbk -- backbone simulate --env vendor-drift --scenario price-drift --days 30
 npm run bbk -- backbone accuracy --env weekend-swing --min-samples 3
+npm run bbk -- backbone memory --env weekend-swing
 npm run bbk -- backbone matrix --env month-end-matrix --days 30
 npm run bbk -- backbone envs
 npm run bbk -- backbone env-prune --older-than-days 14 --keep 20

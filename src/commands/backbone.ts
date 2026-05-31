@@ -40,6 +40,7 @@ type ParsedOptions = {
   olderThanDays?: number
   keep?: number
   force?: boolean
+  limit?: number
 }
 
 type AuditCheck = {
@@ -362,6 +363,65 @@ export const backboneAccuracy = async (args: string[], context: CommandContext):
   })
 }
 
+export const backboneMemory = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const limit = options.limit ?? 12
+  context.terminal.title('Backbone memory')
+
+  await withBackboneTargetDb(context, options, (db, target) => {
+    const summary = buildAccuracySummary(db, target)
+    context.terminal.dump(summary)
+
+    context.terminal.section('Learned SKU corrections')
+    const corrections = db
+      .prepare(
+        `SELECT s.name AS sku,
+                c.sample_count,
+                c.mean_error_quantity,
+                c.mean_abs_error_quantity,
+                c.mean_bottle_error,
+                c.usage_adjustment_daily,
+                c.confidence_adjustment,
+                c.updated_at,
+                MAX(f.evaluated_at) AS latest_feedback
+         FROM backbone_calibrations c
+         JOIN skus s ON s.id = c.sku_id
+         LEFT JOIN backbone_feedback f ON f.sku_id = c.sku_id
+         GROUP BY c.sku_id
+         ORDER BY c.mean_bottle_error DESC, c.sample_count DESC, s.name
+         LIMIT ?`,
+      )
+      .all(limit)
+
+    if (corrections.length === 0) {
+      context.terminal.warn('No learned calibration memory yet.')
+      context.terminal.subtitle('Run `bbk backbone simulate --env <name>` or add later bottle counts after prediction runs.')
+    } else {
+      context.terminal.table(
+        corrections.map((row: any) => {
+          const meanError = toNumber(row.mean_error_quantity)
+          return {
+            sku: row.sku,
+            samples: row.sample_count,
+            direction: meanError > 0 ? 'predicted too low' : meanError < 0 ? 'predicted too high' : 'centered',
+            meanError: round(meanError, 2),
+            bottleMae: round(toNumber(row.mean_bottle_error), 4),
+            dailyCorrection: round(toNumber(row.usage_adjustment_daily), 4),
+            confidenceAdjust: round(toNumber(row.confidence_adjustment), 3),
+            latestFeedback: row.latest_feedback ?? row.updated_at ?? '',
+          }
+        }),
+      )
+    }
+
+    context.terminal.section('Recent feedback')
+    context.terminal.table(buildRecentFeedbackRows(db, limit))
+
+    context.terminal.section('Ungrounded current risks')
+    context.terminal.table(buildUngroundedRiskRows(db, limit))
+  })
+}
+
 export const backboneExplain = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   context.terminal.title('Backbone explanation')
@@ -603,6 +663,81 @@ const buildSkuAccuracyRows = (db: Db): Array<Record<string, unknown>> => {
     dailyAdjust: round(toNumber(row.usage_adjustment_daily), 4),
     confidenceAdjust: round(toNumber(row.confidence_adjustment), 3),
     latest: row.latest_feedback ?? '',
+  }))
+}
+
+const buildRecentFeedbackRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
+  const rows = db
+    .prepare(
+      `SELECT s.name AS sku,
+              f.predicted_on_hand,
+              f.actual_on_hand,
+              f.error_quantity,
+              f.bottle_error,
+              f.evaluated_at
+       FROM backbone_feedback f
+       JOIN skus s ON s.id = f.sku_id
+       ORDER BY f.evaluated_at DESC, f.id DESC
+       LIMIT ?`,
+    )
+    .all(limit)
+
+  return rows.map((row: any) => ({
+    sku: row.sku,
+    predicted: round(toNumber(row.predicted_on_hand), 2),
+    actual: round(toNumber(row.actual_on_hand), 2),
+    error: round(toNumber(row.error_quantity), 2),
+    bottleError: round(toNumber(row.bottle_error), 4),
+    evaluated: row.evaluated_at ?? '',
+  }))
+}
+
+const buildUngroundedRiskRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
+  const latestRun = db
+    .prepare(
+      `SELECT id
+       FROM backbone_runs
+       WHERE status = 'completed'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get()
+  if (!latestRun) return []
+
+  const rows = db
+    .prepare(
+      `SELECT p.sku_name,
+              p.low_stock_risk,
+              p.predicted_on_hand,
+              p.predicted_days_remaining,
+              p.confidence,
+              p.cost_signal
+       FROM backbone_predictions p
+       LEFT JOIN backbone_calibrations c ON c.sku_id = p.sku_id
+       WHERE p.run_id = ?
+         AND c.sku_id IS NULL
+         AND (p.low_stock_risk != 'ok' OR p.cost_signal != 'none')
+       ORDER BY
+         CASE p.low_stock_risk
+           WHEN 'critical' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'low' THEN 2
+           WHEN 'watch' THEN 3
+           ELSE 4
+         END,
+         p.predicted_on_hand,
+         p.sku_name
+       LIMIT ?`,
+    )
+    .all(toNumber(latestRun.id), limit)
+
+  return rows.map((row: any) => ({
+    sku: row.sku_name,
+    risk: row.low_stock_risk,
+    predicted: round(toNumber(row.predicted_on_hand), 2),
+    days: row.predicted_days_remaining ?? '',
+    confidence: row.confidence,
+    cost: row.cost_signal,
   }))
 }
 
@@ -1335,6 +1470,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--force') {
       parsed.force = true
+    } else if (arg === '--limit' && next) {
+      parsed.limit = positiveNumber(next, '--limit')
+      index += 1
     }
   }
   return parsed
