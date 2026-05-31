@@ -26,6 +26,13 @@ type ParsedOptions = {
   toastEnd?: string
   skipToast?: boolean
   scenario?: BackboneSimulationScenario
+  maxAgeMinutes?: number
+}
+
+type AuditCheck = {
+  check: string
+  status: 'pass' | 'warn' | 'fail'
+  detail: string
 }
 
 export const backboneRun = async (args: string[], context: CommandContext): Promise<void> => {
@@ -54,6 +61,31 @@ export const backboneStatus = async (_args: string[], context: CommandContext): 
     }
     renderRun(result, context)
     renderListenerHealth(db, context)
+  })
+}
+
+export const backboneAudit = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const maxAgeMinutes = options.maxAgeMinutes ?? 60
+  context.terminal.title('Backbone audit')
+
+  await withBackendDb(context.config, async (db: any) => {
+    const checks = buildBackboneAudit(db, maxAgeMinutes)
+    context.terminal.table(checks)
+
+    const failures = checks.filter((check) => check.status === 'fail')
+    const warnings = checks.filter((check) => check.status === 'warn')
+    if (failures.length > 0) {
+      context.terminal.error(`Backbone audit failed with ${failures.length} failing check${failures.length === 1 ? '' : 's'}.`)
+      throw new Error(`backbone_audit_failed:${failures.map((check) => check.check).join(',')}`)
+    }
+
+    context.terminal.status(
+      warnings.length > 0 ? 'warn' : 'ok',
+      warnings.length > 0
+        ? `Backbone audit passed with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}.`
+        : 'Backbone audit passed.',
+    )
   })
 }
 
@@ -245,6 +277,116 @@ export const backboneMatrix = async (args: string[], context: CommandContext): P
   const failed = results.filter(({ result }) => !result.passed)
   if (failed.length > 0) throw new Error(`backbone_matrix_failed:${failed.map(({ result }) => result.scenario).join(',')}`)
   context.terminal.success(`Backbone scenario matrix passed ${results.length}/${results.length} scenarios.`)
+}
+
+const buildBackboneAudit = (db: any, maxAgeMinutes: number): AuditCheck[] => {
+  const latestRun = db
+    .prepare(
+      `SELECT id, as_of, metrics_json
+       FROM backbone_runs
+       WHERE status = 'completed'
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .get()
+  const latestCycle = db
+    .prepare(
+      `SELECT *
+       FROM backbone_listener_cycles
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .get()
+  const failedCycles = toNumber(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM backbone_listener_cycles
+         WHERE status = 'failed'
+           AND id >= COALESCE((SELECT MAX(id) - 9 FROM backbone_listener_cycles), 0)`,
+      )
+      .get()?.count,
+  )
+  const predictionCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_predictions').get()?.count)
+  const feedbackCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback').get()?.count)
+  const calibrationCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
+  const costSignals = toNumber(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM backbone_predictions
+         WHERE cost_signal != 'none'`,
+      )
+      .get()?.count,
+  )
+  const openLowStock = latestRun
+    ? toNumber(
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM backbone_predictions
+             WHERE run_id = ?
+               AND low_stock_risk != 'ok'`,
+          )
+          .get(toNumber(latestRun.id))?.count,
+      )
+    : 0
+
+  const checks: AuditCheck[] = []
+  checks.push({
+    check: 'latest run',
+    status: latestRun ? 'pass' : 'fail',
+    detail: latestRun ? `run ${toNumber(latestRun.id)} at ${latestRun.as_of}` : 'no completed Backbone run',
+  })
+  checks.push({
+    check: 'prediction coverage',
+    status: predictionCount > 0 ? 'pass' : 'fail',
+    detail: `${predictionCount} stored prediction${predictionCount === 1 ? '' : 's'}`,
+  })
+
+  if (!latestCycle) {
+    checks.push({ check: 'listener heartbeat', status: 'fail', detail: 'no listener cycle journaled' })
+  } else {
+    const ageMinutes = Math.max(0, (Date.now() - new Date(latestCycle.started_at).getTime()) / 60_000)
+    checks.push({
+      check: 'listener heartbeat',
+      status: ageMinutes <= maxAgeMinutes ? 'pass' : 'fail',
+      detail: `cycle ${latestCycle.id} ${Number(ageMinutes.toFixed(1))}m old`,
+    })
+    checks.push({
+      check: 'listener status',
+      status: latestCycle.status === 'completed' ? 'pass' : 'fail',
+      detail: `${latestCycle.status}${latestCycle.error_message ? `: ${latestCycle.error_message}` : ''}`,
+    })
+    checks.push({
+      check: 'toast intake',
+      status: latestCycle.toast_ok ? 'pass' : 'warn',
+      detail: latestCycle.toast_ok ? latestCycle.toast_summary : latestCycle.toast_error ?? latestCycle.toast_summary,
+    })
+  }
+
+  checks.push({
+    check: 'recent failures',
+    status: failedCycles === 0 ? 'pass' : 'fail',
+    detail: `${failedCycles} failed listener cycle${failedCycles === 1 ? '' : 's'} in last 10`,
+  })
+  checks.push({
+    check: 'low-stock signal',
+    status: openLowStock > 0 ? 'pass' : 'warn',
+    detail: `${openLowStock} non-ok risk prediction${openLowStock === 1 ? '' : 's'} in latest run`,
+  })
+  checks.push({
+    check: 'cost signal',
+    status: costSignals > 0 ? 'pass' : 'warn',
+    detail: `${costSignals} stored cost signal${costSignals === 1 ? '' : 's'}`,
+  })
+  checks.push({
+    check: 'feedback learning',
+    status: feedbackCount > 0 && calibrationCount > 0 ? 'pass' : 'warn',
+    detail: `${feedbackCount} feedback item${feedbackCount === 1 ? '' : 's'}, ${calibrationCount} calibrated SKU${calibrationCount === 1 ? '' : 's'}`,
+  })
+
+  return checks
 }
 
 const tryPullToast = async (
@@ -468,6 +610,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       parsed.skipToast = true
     } else if (arg === '--scenario' && next) {
       parsed.scenario = parseScenario(next)
+      index += 1
+    } else if (arg === '--max-age-minutes' && next) {
+      parsed.maxAgeMinutes = nonNegativeNumber(next, '--max-age-minutes')
       index += 1
     }
   }
