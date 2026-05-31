@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
+import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -138,6 +138,12 @@ export const createCommands = (
     usage: 'bbk backbone memory [--env <name>] [--limit <n>]',
     summary: 'Show learned Backbone calibration memory and ungrounded current risks.',
     handler: backboneMemory,
+  },
+  {
+    path: ['backbone', 'drift'],
+    usage: 'bbk backbone drift [--env <name>] [--min-samples <n>] [--max-bottle-mae <n>] [--max-bias-bottles <n>]',
+    summary: 'Check whether scored sparse counts show stale or biased Backbone learning.',
+    handler: backboneDrift,
   },
   {
     path: ['backbone', 'intake'],

@@ -52,6 +52,7 @@ npm run bbk -- backbone service --interval-ms 300000
 npm run bbk -- backbone snapshot --label before-migration
 npm run bbk -- backbone snapshot-verify --label before-migration
 npm run bbk -- backbone snapshot-restore --label before-migration --env restore-check
+npm run bbk -- backbone drift
 npm run bbk -- backbone status
 npm run bbk -- backbone verify --env acceptance --days 60
 npm run bbk -- backbone simulate --env test-lab --days 30
@@ -80,6 +81,7 @@ npm run bbk -- backbone actions
 npm run bbk -- backbone intake
 npm run bbk -- backbone accuracy
 npm run bbk -- backbone memory
+npm run bbk -- backbone drift
 npm run bbk -- backbone explain --sku "Backbone Vodka 1L"
 npm run bbk -- backbone audit
 npm run bbk -- backbone verify --env acceptance --days 60
@@ -99,6 +101,8 @@ When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu ite
 `bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
 
 `bbk backbone memory` shows what the model has learned from scored counts: SKU-level correction direction, bottle error, confidence adjustment, recent feedback, and current low-stock or cost risks that still lack calibration memory. Add `--env <name>` to inspect a sandbox.
+
+`bbk backbone drift` is the learning health check. It reports feedback sample count, overall bottle error, directional bias in bottle units, feedback freshness, recent-vs-prior error movement, and the SKU drift watchlist. Add `--env <name>` for sandboxed simulations and tighten gates with `--max-bottle-mae`, `--max-bias-bottles`, or `--max-feedback-age-days`.
 
 `bbk backbone explain` opens the evidence behind a prediction: projection method, count age, vendor costs, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
 
@@ -127,7 +131,7 @@ Successful listener pulls with a known time window update `backbone_toast_cursor
 
 Use `bbk backbone snapshot --label <name>` before risky changes or as a scheduled maintenance step. It writes a consistent SQLite backup plus a JSON manifest under `data/backups/`, including row counts, latest Backbone run metrics, latest verification summary, and Toast cursor state. Use `bbk backbone snapshot-verify --label <name>` to run SQLite integrity checks and confirm the backup matches its manifest. Use `bbk backbone snapshot-restore --label <name> --env <environment>` to restore into an isolated environment for inspection without overwriting the base database.
 
-Use `bbk backbone audit` as an operational trust gate. It checks for a recent listener heartbeat, fresh prediction run, listener-to-prediction linkage, sparse count grounding, recent listener failures, prediction coverage, low-stock signals, cost signals, feedback calibration, and Toast cursor state. Hard failures exit non-zero; missing count, cost, calibration, or cursor signals are warnings so a quiet bar day does not block operations. Use `--max-age-minutes` for listener heartbeat freshness, `--max-run-age-minutes` when prediction freshness needs a different threshold, and `--max-count-age-days` for sparse bottle-count cadence.
+Use `bbk backbone audit` as an operational trust gate. It checks for a recent listener heartbeat, fresh prediction run, listener-to-prediction linkage, sparse count grounding, recent listener failures, prediction coverage, low-stock signals, cost signals, feedback calibration, learning drift, and Toast cursor state. Hard failures exit non-zero; missing count, cost, calibration, drift, or cursor signals are warnings so a quiet bar day does not block operations. Use `--max-age-minutes` for listener heartbeat freshness, `--max-run-age-minutes` when prediction freshness needs a different threshold, and `--max-count-age-days` for sparse bottle-count cadence.
 
 Use `bbk backbone verify` as the acceptance gate for model redesign work. It creates fresh isolated environments, runs the validation-day simulation and rolling backtest for each scenario, and exits non-zero unless every scenario passes bottle-count accuracy, low-stock detection, cost-cutting detection, shrink detection, feedback, and calibration thresholds. Each verification run is persisted in `backbone_verifications`; use `bbk backbone verify-history` to inspect recent pass/fail history after terminal sessions end.
 

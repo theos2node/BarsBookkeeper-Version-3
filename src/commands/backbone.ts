@@ -36,6 +36,9 @@ type ParsedOptions = {
   maxAgeMinutes?: number
   maxRunAgeMinutes?: number
   maxCountAgeDays?: number
+  maxFeedbackAgeDays?: number
+  maxBottleMae?: number
+  maxBiasBottles?: number
   recoverStaleMinutes?: number
   cursorLookbackMinutes?: number
   minSamples?: number
@@ -78,6 +81,28 @@ type AccuracySummary = {
   meanAbsErrorQty: number
   biasQty: number
   latestFeedback: string
+}
+
+type LearningDriftSummary = {
+  target: string
+  feedbackSamples: number
+  calibratedSkus: number
+  staleCalibrationSkus: number
+  bottleMae: number
+  biasBottles: number
+  recentBottleMae: number
+  previousBottleMae: number
+  trendDelta: number
+  latestFeedback: string
+  feedbackAgeDays: number | null
+  thresholds: {
+    minSamples: number
+    maxBottleMae: number
+    maxBiasBottles: number
+    maxFeedbackAgeDays: number
+  }
+  status: 'pass' | 'warn'
+  statusReason: string
 }
 
 type RuntimeLockState = {
@@ -642,6 +667,59 @@ export const backboneMemory = async (args: string[], context: CommandContext): P
   })
 }
 
+export const backboneDrift = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const limit = options.limit ?? 12
+  const thresholds = {
+    minSamples: options.minSamples ?? 3,
+    maxBottleMae: options.maxBottleMae ?? 0.25,
+    maxBiasBottles: options.maxBiasBottles ?? 0.2,
+    maxFeedbackAgeDays: options.maxFeedbackAgeDays ?? options.maxCountAgeDays ?? 45,
+  }
+  context.terminal.title('Backbone learning drift')
+
+  await withBackboneTargetDb(context, options, (db, target) => {
+    const summary = buildLearningDriftSummary(db, target, thresholds)
+    context.terminal.dump(summary)
+
+    if (summary.feedbackSamples === 0) {
+      context.terminal.warn('No Backbone feedback has been scored yet.')
+      context.terminal.subtitle('Run `bbk backbone simulate --env <name>` or add a later hand count after a prediction run.')
+      return
+    }
+
+    context.terminal.status(
+      summary.feedbackSamples >= thresholds.minSamples ? 'ok' : 'warn',
+      `feedback sample floor: ${summary.feedbackSamples}/${thresholds.minSamples}`,
+    )
+    context.terminal.status(
+      summary.bottleMae <= thresholds.maxBottleMae ? 'ok' : 'warn',
+      `overall bottle MAE: ${summary.bottleMae}`,
+      summary.bottleMae <= thresholds.maxBottleMae ? 'within drift target' : `above ${thresholds.maxBottleMae} bottle target`,
+    )
+    context.terminal.status(
+      Math.abs(summary.biasBottles) <= thresholds.maxBiasBottles ? 'ok' : 'warn',
+      `bias: ${summary.biasBottles} bottles`,
+      Math.abs(summary.biasBottles) <= thresholds.maxBiasBottles ? 'centered' : `outside +/-${thresholds.maxBiasBottles} bottle target`,
+    )
+    context.terminal.status(
+      summary.feedbackAgeDays !== null && summary.feedbackAgeDays <= thresholds.maxFeedbackAgeDays ? 'ok' : 'warn',
+      summary.feedbackAgeDays === null
+        ? 'feedback freshness: no scored feedback'
+        : `feedback freshness: ${summary.feedbackAgeDays}d old`,
+      `max ${thresholds.maxFeedbackAgeDays}d`,
+    )
+    context.terminal.status(
+      summary.trendDelta <= 0.05 ? 'ok' : 'warn',
+      `recent-vs-prior bottle MAE delta: ${summary.trendDelta}`,
+      summary.previousBottleMae > 0 ? `recent ${summary.recentBottleMae}; prior ${summary.previousBottleMae}` : 'not enough prior samples for trend',
+    )
+
+    context.terminal.section('SKU drift watchlist')
+    context.terminal.table(buildLearningDriftRows(db, limit))
+  })
+}
+
 export const backboneIntake = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const limit = options.limit ?? 12
@@ -1045,6 +1123,141 @@ const buildAccuracySummary = (db: Db, target: string): AccuracySummary => {
     biasQty: round(toNumber(row?.bias_qty), 2),
     latestFeedback: row?.latest_feedback ? String(row.latest_feedback) : '',
   }
+}
+
+const buildLearningDriftSummary = (
+  db: Db,
+  target: string,
+  thresholds: LearningDriftSummary['thresholds'],
+): LearningDriftSummary => {
+  const aggregate = db
+    .prepare(
+      `WITH feedback_with_bottles AS (
+         SELECT f.*,
+                COALESCE(
+                  (SELECT MIN(vi.pack_size)
+                   FROM vendor_items vi
+                   WHERE vi.sku_id = f.sku_id AND vi.active = 1),
+                  1000
+                ) AS bottle_size
+         FROM backbone_feedback f
+       )
+       SELECT COUNT(*) AS feedback_samples,
+              COUNT(DISTINCT sku_id) AS calibrated_skus,
+              AVG(bottle_error) AS bottle_mae,
+              AVG(error_quantity / NULLIF(bottle_size, 0)) AS bias_bottles,
+              MAX(evaluated_at) AS latest_feedback
+       FROM feedback_with_bottles`,
+    )
+    .get()
+  const feedbackSamples = toNumber(aggregate?.feedback_samples)
+  const latestFeedback = aggregate?.latest_feedback ? String(aggregate.latest_feedback) : ''
+  const feedbackAgeDays = latestFeedback ? round(ageMinutes(latestFeedback) / (24 * 60), 2) : null
+  const staleCalibrationSkus = toNumber(
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM backbone_calibrations c
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM backbone_feedback f
+           WHERE f.sku_id = c.sku_id
+             AND datetime(f.evaluated_at) >= datetime('now', '-' || ? || ' days')
+         )`,
+      )
+      .get(thresholds.maxFeedbackAgeDays)?.count,
+  )
+
+  const orderedFeedback = db
+    .prepare(
+      `SELECT bottle_error
+       FROM backbone_feedback
+       ORDER BY datetime(evaluated_at) DESC, id DESC`,
+    )
+    .all()
+    .map((row: any) => toNumber(row.bottle_error))
+  const recentWindowSize = Math.min(5, Math.ceil(orderedFeedback.length / 2))
+  const recent = orderedFeedback.slice(0, recentWindowSize)
+  const previous = orderedFeedback.slice(recentWindowSize, recentWindowSize * 2)
+  const recentBottleMae = mean(recent)
+  const previousBottleMae = mean(previous)
+  const trendDelta = previousBottleMae > 0 ? round(recentBottleMae - previousBottleMae, 4) : 0
+  const bottleMae = round(toNumber(aggregate?.bottle_mae), 4)
+  const biasBottles = round(toNumber(aggregate?.bias_bottles), 4)
+  const warnings = [
+    feedbackSamples < thresholds.minSamples ? 'sample floor not met' : '',
+    bottleMae > thresholds.maxBottleMae ? 'overall bottle MAE above threshold' : '',
+    Math.abs(biasBottles) > thresholds.maxBiasBottles ? 'directional bias above threshold' : '',
+    feedbackAgeDays === null || feedbackAgeDays > thresholds.maxFeedbackAgeDays ? 'feedback is stale' : '',
+    trendDelta > 0.05 ? 'recent error is worsening' : '',
+  ].filter(Boolean)
+
+  return {
+    target,
+    feedbackSamples,
+    calibratedSkus: toNumber(aggregate?.calibrated_skus),
+    staleCalibrationSkus,
+    bottleMae,
+    biasBottles,
+    recentBottleMae: round(recentBottleMae, 4),
+    previousBottleMae: round(previousBottleMae, 4),
+    trendDelta,
+    latestFeedback,
+    feedbackAgeDays,
+    thresholds,
+    status: warnings.length === 0 ? 'pass' : 'warn',
+    statusReason: warnings.length === 0 ? 'learning feedback is centered and fresh' : warnings.join('; '),
+  }
+}
+
+const buildLearningDriftRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
+  const rows = db
+    .prepare(
+      `WITH feedback_with_bottles AS (
+         SELECT f.*,
+                COALESCE(
+                  (SELECT MIN(vi.pack_size)
+                   FROM vendor_items vi
+                   WHERE vi.sku_id = f.sku_id AND vi.active = 1),
+                  1000
+                ) AS bottle_size
+         FROM backbone_feedback f
+       )
+       SELECT s.name AS sku,
+              COUNT(f.id) AS samples,
+              AVG(f.bottle_error) AS bottle_mae,
+              MAX(f.bottle_error) AS max_bottle_error,
+              AVG(f.error_quantity / NULLIF(f.bottle_size, 0)) AS bias_bottles,
+              SUM(CASE WHEN f.error_quantity > 0 THEN 1 ELSE 0 END) AS predicted_too_low,
+              SUM(CASE WHEN f.error_quantity < 0 THEN 1 ELSE 0 END) AS predicted_too_high,
+              c.usage_adjustment_daily,
+              c.confidence_adjustment,
+              MAX(f.evaluated_at) AS latest_feedback
+       FROM feedback_with_bottles f
+       JOIN skus s ON s.id = f.sku_id
+       LEFT JOIN backbone_calibrations c ON c.sku_id = f.sku_id
+       GROUP BY f.sku_id
+       ORDER BY ABS(bias_bottles) DESC, bottle_mae DESC, samples DESC, sku
+       LIMIT ?`,
+    )
+    .all(limit)
+
+  return rows.map((row: any) => {
+    const biasBottles = toNumber(row.bias_bottles)
+    return {
+      sku: row.sku,
+      samples: row.samples,
+      bottleMae: round(toNumber(row.bottle_mae), 4),
+      maxBottleError: round(toNumber(row.max_bottle_error), 4),
+      biasBottles: round(biasBottles, 4),
+      direction: biasBottles > 0 ? 'predicted too low' : biasBottles < 0 ? 'predicted too high' : 'centered',
+      tooLow: row.predicted_too_low,
+      tooHigh: row.predicted_too_high,
+      dailyAdjust: round(toNumber(row.usage_adjustment_daily), 4),
+      confidenceAdjust: round(toNumber(row.confidence_adjustment), 3),
+      latest: row.latest_feedback ?? '',
+    }
+  })
 }
 
 const buildSkuAccuracyRows = (db: Db): Array<Record<string, unknown>> => {
@@ -1994,6 +2207,12 @@ const buildBackboneAudit = (
   const predictionCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_predictions').get()?.count)
   const feedbackCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback').get()?.count)
   const calibrationCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
+  const learningDrift = buildLearningDriftSummary(db, 'base', {
+    minSamples: 3,
+    maxBottleMae: 0.25,
+    maxBiasBottles: 0.2,
+    maxFeedbackAgeDays: options.maxCountAgeDays,
+  })
   const toastCoverage = buildToastIntakeSummary(db, 'base')
   const costSignals = toNumber(
     db
@@ -2120,6 +2339,13 @@ const buildBackboneAudit = (
     check: 'feedback learning',
     status: feedbackCount > 0 && calibrationCount > 0 ? 'pass' : 'warn',
     detail: `${feedbackCount} feedback item${feedbackCount === 1 ? '' : 's'}, ${calibrationCount} calibrated SKU${calibrationCount === 1 ? '' : 's'}`,
+  })
+  checks.push({
+    check: 'learning drift',
+    status: learningDrift.status,
+    detail: feedbackCount === 0
+      ? 'no scored feedback yet'
+      : `bottle MAE ${learningDrift.bottleMae}, bias ${learningDrift.biasBottles} bottles, latest ${learningDrift.feedbackAgeDays ?? '?'}d old; ${learningDrift.statusReason}`,
   })
   checks.push({
     check: 'toast cursor',
@@ -2505,6 +2731,15 @@ const parseOptions = (args: string[]): ParsedOptions => {
     } else if (arg === '--max-count-age-days' && next) {
       parsed.maxCountAgeDays = nonNegativeNumber(next, '--max-count-age-days')
       index += 1
+    } else if (arg === '--max-feedback-age-days' && next) {
+      parsed.maxFeedbackAgeDays = nonNegativeNumber(next, '--max-feedback-age-days')
+      index += 1
+    } else if (arg === '--max-bottle-mae' && next) {
+      parsed.maxBottleMae = nonNegativeDecimal(next, '--max-bottle-mae')
+      index += 1
+    } else if (arg === '--max-bias-bottles' && next) {
+      parsed.maxBiasBottles = nonNegativeDecimal(next, '--max-bias-bottles')
+      index += 1
     } else if (arg === '--recover-stale-minutes' && next) {
       parsed.recoverStaleMinutes = nonNegativeNumber(next, '--recover-stale-minutes')
       index += 1
@@ -2547,6 +2782,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
 
 const round = (value: number, decimals = 3): number => Number(value.toFixed(decimals))
 
+const mean = (values: number[]): number =>
+  values.length === 0 ? 0 : round(values.reduce((sum, value) => sum + value, 0) / values.length, 6)
+
 const positiveNumber = (value: string, flag: string): number => {
   const number = toNumber(value)
   if (number <= 0) throw new Error(`${flag}_must_be_positive`)
@@ -2557,6 +2795,12 @@ const nonNegativeNumber = (value: string, flag: string): number => {
   const number = toNumber(value)
   if (number < 0) throw new Error(`${flag}_must_be_non_negative`)
   return Math.round(number)
+}
+
+const nonNegativeDecimal = (value: string, flag: string): number => {
+  const number = toNumber(value)
+  if (number < 0) throw new Error(`${flag}_must_be_non_negative`)
+  return number
 }
 
 const cleanEnvName = (value: string): string => {
