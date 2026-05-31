@@ -71,6 +71,52 @@ export const backboneStatus = async (_args: string[], context: CommandContext): 
   })
 }
 
+export const backboneActions = async (_args: string[], context: CommandContext): Promise<void> => {
+  context.terminal.title('Backbone actions')
+  await withBackendDb(context.config, async (db: any) => {
+    const result = getLatestBackboneRun(db)
+    if (!result) {
+      context.terminal.warn('No Backbone runs yet.')
+      context.terminal.subtitle('Run `bbk backbone run` or `bbk backbone listen --once`.')
+      return
+    }
+
+    context.terminal.dump({
+      runId: result.runId,
+      asOf: result.asOf,
+      predictions: result.predictionCount,
+      lowStock: result.lowStockCount,
+      costOptions: result.costCuttingOptions,
+    })
+
+    const orderRows = result.predictions
+      .filter((prediction) => prediction.lowStockRisk !== 'ok')
+      .slice(0, 12)
+      .map((prediction) => ({
+        sku: prediction.skuName,
+        risk: prediction.lowStockRisk,
+        predicted: `${prediction.predictedOnHand} ${prediction.unit}`,
+        days: prediction.predictedDaysRemaining ?? '',
+        order: prediction.recommendedOrderQty > 0 ? `${prediction.recommendedOrderQty} ${prediction.unit}` : 'review',
+        confidence: prediction.confidence,
+      }))
+    context.terminal.section('Order now')
+    context.terminal.table(orderRows)
+
+    const costRows = result.predictions
+      .filter((prediction) => prediction.costSignal !== 'none')
+      .slice(0, 12)
+      .map((prediction) => ({
+        sku: prediction.skuName,
+        signal: prediction.costSignal,
+        confidence: prediction.confidence,
+        learned: prediction.calibrationSamples,
+      }))
+    context.terminal.section('Cost cuts')
+    context.terminal.table(costRows)
+  })
+}
+
 export const backboneAudit = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const maxAgeMinutes = options.maxAgeMinutes ?? 60

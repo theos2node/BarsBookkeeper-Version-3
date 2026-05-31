@@ -61,8 +61,11 @@ The Backbone model is the terminal-first prediction layer. It listens to the sam
 ```sh
 npm run bbk -- backbone run --horizon-days 7
 npm run bbk -- backbone status
+npm run bbk -- backbone actions
 npm run bbk -- backbone audit
 ```
+
+`bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals.
 
 For continuous terminal operation, run the listener. It attempts a Toast pull every cycle, runs OpenClaw review generation, and refreshes Backbone predictions. Temporary Toast failures are reported as warnings without stopping local prediction runs.
 

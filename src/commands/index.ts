@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAudit, backboneListen, backboneMatrix, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneActions, backboneAudit, backboneListen, backboneMatrix, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -78,6 +78,12 @@ export const createCommands = (
     usage: 'bbk backbone audit [--max-age-minutes <minutes>]',
     summary: 'Check Backbone listener, prediction, feedback, and signal health.',
     handler: backboneAudit,
+  },
+  {
+    path: ['backbone', 'actions'],
+    usage: 'bbk backbone actions',
+    summary: 'Show actionable low-stock orders and cost-cutting signals from the latest Backbone run.',
+    handler: backboneActions,
   },
   {
     path: ['backbone', 'listen'],

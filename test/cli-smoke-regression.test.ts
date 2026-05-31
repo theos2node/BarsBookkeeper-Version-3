@@ -131,6 +131,7 @@ process.exit(1)
     const consoleOutput = await expectCliOk(['console'], dataDir)
     const backboneStatus = await expectCliOk(['backbone', 'status'], dataDir)
     const backboneAudit = await expectCliOk(['backbone', 'audit'], dataDir)
+    const backboneActions = await expectCliOk(['backbone', 'actions'], dataDir)
 
     expect(consoleOutput).toContain('Snapshot')
     expect(consoleOutput).toContain('Inventory')
@@ -143,6 +144,8 @@ process.exit(1)
     expect(backboneStatus).toContain('Listener health')
     expect(backboneAudit).toContain('Backbone audit passed')
     expect(backboneAudit).toContain('listener heartbeat')
+    expect(backboneActions).toContain('Order now')
+    expect(backboneActions).toContain('Cost cuts')
 
     db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
     const baseline = {
