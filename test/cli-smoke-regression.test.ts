@@ -159,6 +159,7 @@ process.exit(1)
     const backboneAudit = await expectCliOk(['backbone', 'audit'], dataDir)
     const backboneSnapshot = await expectCliOk(['backbone', 'snapshot', '--label', 'smoke-snapshot'], dataDir)
     const backboneSnapshotVerify = await expectCliOk(['backbone', 'snapshot-verify', '--label', 'smoke-snapshot'], dataDir)
+    const backboneSnapshotRestore = await expectCliOk(['backbone', 'snapshot-restore', '--label', 'smoke-snapshot', '--env', 'restored-snapshot'], dataDir)
     const backboneActions = await expectCliOk(['backbone', 'actions'], dataDir)
     const backboneEnvs = await expectCliOk(['backbone', 'envs'], dataDir)
 
@@ -232,8 +233,12 @@ process.exit(1)
     expect(backboneSnapshotVerify).toContain('Backbone snapshot verification')
     expect(backboneSnapshotVerify).toContain('integrity: ok')
     expect(backboneSnapshotVerify).toContain('Snapshot smoke-snapshot verified.')
+    expect(backboneSnapshotRestore).toContain('Backbone snapshot restore')
+    expect(backboneSnapshotRestore).toContain('Snapshot smoke-snapshot restored into environment restored-snapshot.')
+    expect(backboneSnapshotRestore).toContain('restored-snapshot')
     expect(backboneActions).toContain('Order now')
     expect(backboneActions).toContain('Cost cuts')
+    expect(backboneEnvs).toContain('restored-snapshot')
     expect(backboneEnvs).toContain('smoke-matrix')
     expect(backboneEnvs).toContain('ready')
 
@@ -274,6 +279,16 @@ process.exit(1)
     expect(manifest.counts.backboneRuns).toBeGreaterThan(0)
     expect(manifest.counts.backbonePredictions).toBeGreaterThan(0)
     expect(manifest.counts.backboneVerifications).toBe(1)
+    const restoredPath = join(dataDir, 'environments', 'restored-snapshot', 'barsbookkeeper.sqlite')
+    expect(existsSync(restoredPath)).toBe(true)
+    const restoredDb = openDatabase(restoredPath)
+    expect(toNumber(restoredDb.prepare('SELECT COUNT(*) AS value FROM backbone_runs').get()?.value)).toBe(
+      manifest.counts.backboneRuns,
+    )
+    expect(toNumber(restoredDb.prepare('SELECT COUNT(*) AS value FROM backbone_predictions').get()?.value)).toBe(
+      manifest.counts.backbonePredictions,
+    )
+    restoredDb.close()
     expect(manifest.latestRun?.id).toBeGreaterThan(0)
     expect(manifest.latestVerification?.status).toBe('passed')
     expect(manifest.toastCursor?.lastEnd).toBe('2026-05-11T00:00:00.000Z')
@@ -431,5 +446,17 @@ process.exit(1)
     expect(
       scalar(db, "SELECT COUNT(*) AS value FROM backbone_environments WHERE name IN ('prune-a', 'prune-b')"),
     ).toBe(0)
+  })
+
+  it('rejects unsafe snapshot restore environment paths', async () => {
+    await expectCliOk(['setup'], dataDir)
+    await expectCliOk(['seed-demo'], dataDir)
+    await expectCliOk(['backbone', 'run'], dataDir)
+    await expectCliOk(['backbone', 'snapshot', '--label', 'unsafe-restore-check'], dataDir)
+
+    const restore = await runCli(['backbone', 'snapshot-restore', '--label', 'unsafe-restore-check', '--env', '..', '--force'], dataDir)
+    expect(restore.code).toBe(1)
+    expect(restore.output).toContain('unsafe_restore_environment_path')
+    expect(existsSync(join(dataDir, 'barsbookkeeper.sqlite'))).toBe(true)
   })
 })

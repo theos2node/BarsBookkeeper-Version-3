@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
@@ -351,6 +351,55 @@ export const backboneSnapshotVerify = async (args: string[], context: CommandCon
   } finally {
     snapshotDb.close()
   }
+}
+
+export const backboneSnapshotRestore = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  if (!options.label) throw new Error('snapshot_label_required')
+  if (!options.env) throw new Error('restore_environment_required')
+  const label = cleanEnvName(options.label)
+  const envName = cleanEnvName(options.env)
+  const backupDir = resolve(context.config.dataDir, 'backups')
+  const snapshotPath = resolve(backupDir, `${label}.sqlite`)
+  const manifestPath = resolve(backupDir, `${label}.manifest.json`)
+  const environmentRoot = resolve(context.config.dataDir, 'environments')
+  const envDir = resolve(context.config.dataDir, 'environments', envName)
+  const envDbPath = resolve(envDir, 'barsbookkeeper.sqlite')
+
+  context.terminal.title('Backbone snapshot restore')
+  if (!existsSync(snapshotPath)) throw new Error(`backbone_snapshot_missing:${snapshotPath}`)
+  if (!existsSync(manifestPath)) throw new Error(`backbone_snapshot_manifest_missing:${manifestPath}`)
+  if (!isInsideDirectory(environmentRoot, envDir)) throw new Error(`unsafe_restore_environment_path:${envDir}`)
+  if (existsSync(envDir) && !options.force) throw new Error(`backbone_restore_environment_exists:${envName}:use_--force_to_replace`)
+
+  await assertSnapshotReadable(snapshotPath, manifestPath)
+  if (options.force) await rm(envDir, { recursive: true, force: true })
+  await mkdir(envDir, { recursive: true })
+  await copyFile(snapshotPath, envDbPath)
+
+  const restoredDb = openDatabase(envDbPath)
+  try {
+    migrateDatabase(restoredDb)
+  } finally {
+    restoredDb.close()
+  }
+
+  await withBackendDb(context.config, async (controlDb: any) => {
+    ensureBackboneEnvironment(controlDb, {
+      name: envName,
+      dbPath: envDbPath,
+      description: `Restored from Backbone snapshot ${label}`,
+    })
+  })
+
+  context.terminal.success(`Snapshot ${label} restored into environment ${envName}.`)
+  context.terminal.dump({
+    label,
+    env: envName,
+    snapshotPath,
+    envDbPath,
+    forced: Boolean(options.force),
+  })
 }
 
 export const backboneActions = async (_args: string[], context: CommandContext): Promise<void> => {
@@ -864,6 +913,23 @@ const scalarCount = (db: any, table: string): number =>
 
 const countMismatch = (name: string, actual: number, expected: number | undefined): string =>
   expected === undefined || actual === expected ? '' : `${name}:${actual}!=${expected}`
+
+const assertSnapshotReadable = async (snapshotPath: string, manifestPath: string): Promise<void> => {
+  const manifest = parseJson<SnapshotManifest>(await readFile(manifestPath, 'utf8'), { counts: { backboneRuns: 0, backbonePredictions: 0, backboneVerifications: 0 } })
+  const snapshotDb = openDatabase(snapshotPath)
+  try {
+    const integrity = String(snapshotDb.prepare('PRAGMA integrity_check').get()?.integrity_check ?? '')
+    const mismatches = [
+      countMismatch('backboneRuns', scalarCount(snapshotDb, 'backbone_runs'), manifest.counts.backboneRuns),
+      countMismatch('backbonePredictions', scalarCount(snapshotDb, 'backbone_predictions'), manifest.counts.backbonePredictions),
+      countMismatch('backboneVerifications', scalarCount(snapshotDb, 'backbone_verifications'), manifest.counts.backboneVerifications),
+    ].filter(Boolean)
+    if (integrity !== 'ok') throw new Error(`backbone_snapshot_integrity_failed:${integrity}`)
+    if (mismatches.length > 0) throw new Error(`backbone_snapshot_manifest_mismatch:${mismatches.join(',')}`)
+  } finally {
+    snapshotDb.close()
+  }
+}
 
 const sqlString = (value: string): string => value.replace(/'/g, "''")
 
