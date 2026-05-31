@@ -620,9 +620,11 @@ export const backboneActions = async (_args: string[], context: CommandContext):
         days: prediction.predictedDaysRemaining ?? '',
         order: prediction.recommendedOrderQty > 0 ? `${prediction.recommendedOrderQty} ${prediction.unit}` : 'review',
         confidence: prediction.confidence,
+        ground: sparseCountAction(prediction.skuName, prediction.unit),
       }))
     context.terminal.section('Order now')
     context.terminal.table(orderRows)
+    renderCommandLines(context, 'Grounding commands', orderRows, 'ground')
 
     const costRows = result.predictions
       .filter((prediction) => prediction.costSignal !== 'none')
@@ -632,9 +634,11 @@ export const backboneActions = async (_args: string[], context: CommandContext):
         signal: prediction.costSignal,
         confidence: prediction.confidence,
         learned: prediction.calibrationSamples,
+        next: `bbk backbone explain --sku ${shellArg(prediction.skuName)}`,
       }))
     context.terminal.section('Cost cuts')
     context.terminal.table(costRows)
+    renderCommandLines(context, 'Cost drill-down commands', costRows, 'next')
   })
 }
 
@@ -939,6 +943,7 @@ export const backboneRecipeSuggestions = async (args: string[], context: Command
     }
 
     context.terminal.table(rows)
+    renderCommandLines(context, 'Commands', rows, 'command')
   })
 }
 
@@ -960,6 +965,7 @@ export const backboneGaps = async (args: string[], context: CommandContext): Pro
 
     context.terminal.section('Prioritized gaps')
     context.terminal.table(rows)
+    renderCommandLines(context, 'Commands', rows, 'action')
   })
 }
 
@@ -1129,8 +1135,10 @@ export const backboneTrust = async (args: string[], context: CommandContext): Pr
       },
     ])
 
+    const actionRows = buildTrustActionRows(auditChecks, gapRows, limit)
     context.terminal.section('Next actions')
-    context.terminal.table(buildTrustActionRows(auditChecks, gapRows, limit))
+    context.terminal.table(actionRows)
+    renderCommandLines(context, 'Command queue', actionRows, 'action')
 
     if (failures.length > 0) {
       throw new Error(`backbone_trust_failed:${failures.map((check) => check.check).join(',')}`)
@@ -1281,15 +1289,39 @@ const buildTrustActionRows = (
 }
 
 const trustActionForAuditCheck = (check: string): string => {
-  if (check.includes('listener')) return 'start or inspect backbone listen/service'
-  if (check.includes('prediction')) return 'run backbone run or listener cycle'
-  if (check.includes('count')) return 'ingest sparse count'
-  if (check.includes('recipe')) return 'run backbone recipe-suggestions'
-  if (check.includes('feedback') || check.includes('drift')) return 'run backbone verify or add later count'
-  if (check.includes('cursor')) return 'run successful Toast pull'
-  if (check.includes('cost')) return 'ingest recent invoice'
-  if (check.includes('low-stock')) return 'review backbone actions'
-  return 'inspect audit detail'
+  if (check.includes('listener')) return 'bbk backbone listen --once'
+  if (check.includes('prediction')) return 'bbk backbone run'
+  if (check.includes('count')) return 'bbk backbone gaps --limit 8'
+  if (check.includes('recipe')) return 'bbk backbone recipe-suggestions --limit 8'
+  if (check.includes('feedback') || check.includes('drift')) return 'bbk backbone verify --env acceptance --days 60'
+  if (check.includes('cursor')) return 'bbk toast pull'
+  if (check.includes('cost')) return 'bbk backbone gaps --limit 8'
+  if (check.includes('low-stock')) return 'bbk backbone actions'
+  return 'bbk backbone status'
+}
+
+const renderCommandLines = (
+  context: CommandContext,
+  title: string,
+  rows: Array<Record<string, unknown>>,
+  field: string,
+): void => {
+  const commands = rows
+    .map((row) => String(row[field] ?? '').trim())
+    .filter((value, index, all) => value.startsWith('bbk ') && all.indexOf(value) === index)
+  if (commands.length === 0) return
+  context.terminal.section(title)
+  for (const command of commands) context.terminal.line(command)
+}
+
+const shellArg = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`
+
+const sparseCountAction = (skuName: string, unit?: string): string => {
+  const cleanUnit = unit?.trim() || 'units'
+  if (cleanUnit.toLowerCase() === 'ml' && /\b\d+(?:\.\d+)?\s*(?:l|ml)\b/i.test(skuName)) {
+    return `bbk ingest note ${shellArg(`${skuName} <actual bottles> bottles`)} --dry-run`
+  }
+  return `bbk ingest note ${shellArg(`${skuName} <actual ${cleanUnit}> ${cleanUnit}`)} --dry-run`
 }
 
 const horizonRiskRank: Record<string, number> = {
@@ -2077,7 +2109,7 @@ const buildBackboneGapRows = (
       gap: 'map Toast recipe',
       target: row.menuItem,
       detail: `${row.occurrences} unresolved sale${row.occurrences === 1 ? '' : 's'}; ${row.sales} Toast unit${row.sales === 1 ? '' : 's'}`,
-      action: suggestion?.command ?? `toast map-recipe "${row.menuItem}" <sku> <qty> <unit>`,
+      action: suggestion?.command ?? `bbk toast map-recipe ${shellArg(String(row.menuItem))} <sku> <qty> <unit>`,
     })
   }
 
@@ -2088,7 +2120,7 @@ const buildBackboneGapRows = (
     gap: 'ground risky prediction',
     target: row.sku,
     detail: `${row.risk} risk; predicted ${row.predicted}; confidence ${row.confidence}`,
-    action: 'add sparse count',
+    action: sparseCountAction(String(row.sku), String(row.unit ?? '')),
   })))
 
   const seen = new Set<string>()
@@ -2168,7 +2200,7 @@ const buildStaleCountGapRows = (
         detail: row.latest_count
           ? `latest count ${ageDays}d old; risk ${risk}`
           : `no hand count yet; risk ${risk}`,
-        action: `ingest count for ${row.sku}`,
+        action: sparseCountAction(String(row.sku), String(row.unit ?? '')),
       }
     })
 }
@@ -2199,7 +2231,7 @@ const buildMissingVendorCostGapRows = (db: Db, limit: number): Array<Record<stri
     gap: 'add invoice/vendor cost',
     target: row.sku,
     detail: `${row.event_count} inventory event${toNumber(row.event_count) === 1 ? '' : 's'} but no active priced vendor item`,
-    action: `ingest invoice for ${row.sku}`,
+    action: `bbk ingest invoice ${shellArg(`./invoices/${String(row.sku).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'vendor'}-invoice.csv`)}`,
   }))
 }
 
@@ -2261,6 +2293,7 @@ const buildUngroundedRiskRows = (db: Db, limit: number): Array<Record<string, un
               p.predicted_on_hand,
               p.predicted_days_remaining,
               p.confidence,
+              p.unit,
               p.cost_signal
        FROM backbone_predictions p
        LEFT JOIN backbone_calibrations c ON c.sku_id = p.sku_id
@@ -2287,6 +2320,7 @@ const buildUngroundedRiskRows = (db: Db, limit: number): Array<Record<string, un
     predicted: round(toNumber(row.predicted_on_hand), 2),
     days: row.predicted_days_remaining ?? '',
     confidence: row.confidence,
+    unit: row.unit,
     cost: row.cost_signal,
   }))
 }

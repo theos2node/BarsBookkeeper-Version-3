@@ -404,7 +404,7 @@ const suggestionRow = (
     suggestedUnit,
     confidence: round(confidence, 2),
     reason,
-    command: `toast map-recipe "${row.menuItem}" "${suggestedSkuName}" ${suggestedQuantity} ${suggestedUnit}`,
+    command: `bbk toast map-recipe "${row.menuItem}" "${suggestedSkuName}" ${suggestedQuantity} ${suggestedUnit}`,
   }
 }
 

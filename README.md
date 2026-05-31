@@ -107,6 +107,8 @@ npm run bbk -- backbone env-prune --older-than-days 14
 
 `bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals.
 
+Action, gap, and trust reports include command-ready next steps where possible, including sparse note templates such as `bbk ingest note "House Vodka 1L <actual bottles> bottles" --dry-run` and drill-down commands like `bbk backbone explain --sku ...`.
+
 `bbk backbone plan` runs the model across multiple horizons and summarizes which bottles become risky first, so ordering can move before a low-stock item becomes urgent.
 
 `bbk backbone intake` shows how much Toast history is becoming usable ingredient consumption. It reports recipe coverage, mapped consumption events, missing-recipe backlog, conservative recipe suggestions, and recent mapped Toast consumption so blind spots are visible before they pollute predictions.

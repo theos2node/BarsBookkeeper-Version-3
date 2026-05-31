@@ -274,7 +274,7 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
       suggestion.suggestedSkuName === 'House Vodka 1L' &&
       suggestion.suggestedQuantity === 75 &&
       suggestion.suggestedUnit === 'ml' &&
-      suggestion.command.includes('toast map-recipe'),
+      suggestion.command.includes('bbk toast map-recipe'),
     )).toBe(true)
     expect(db.prepare("SELECT COUNT(*) AS count FROM inventory_events WHERE event_type = 'sale'").get()?.count).toBe(0)
     expect(db.prepare("SELECT COUNT(*) AS count FROM openclaw_decisions WHERE state = 'needs_review'").get()?.count).toBe(1)
