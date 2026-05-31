@@ -2,7 +2,7 @@ import { getInventoryPositions } from '../db/inventory.js'
 import { toNumber, type Db } from '../db/database.js'
 import { ingestCounts, ingestInvoices, ingestToastSales, type CountRow, type InvoiceRow, type ToastSalesRow } from '../ingest/index.js'
 import { ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../db/repositories.js'
-import { runBackboneModel, type BackbonePrediction, type BackboneRunResult } from './index.js'
+import { runBackboneModel, scoreBackboneFeedback, type BackbonePrediction, type BackboneRunResult } from './index.js'
 
 export type BackboneSimulationOptions = {
   startAt?: string
@@ -24,6 +24,8 @@ export type BackboneSimulationResult = {
   lowStockRecall: number
   lowStockPrecision: number
   costCuttingOptions: number
+  feedbackItems: number
+  calibratedSkus: number
   passed: boolean
   predictions: Array<{
     sku: string
@@ -140,6 +142,8 @@ export const runBackboneAccuracySimulation = (
   const lowStockRecall = round(actualLow === 0 ? 1 : truePositives / actualLow, 3)
   const lowStockPrecision = round(predictedLow === 0 ? 1 : truePositives / predictedLow, 3)
   const costCuttingOptions = evaluated.filter((row) => row.costSignal !== 'none').length
+  const feedbackItems = scoreBackboneFeedback(db, { asOf: actualAsOf })
+  const calibratedSkus = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
   const passed = bottleMae <= 0.1 && maxBottleError <= 0.25 && lowStockRecall >= 1 && lowStockPrecision >= 0.75 && costCuttingOptions > 0
 
   return {
@@ -152,6 +156,8 @@ export const runBackboneAccuracySimulation = (
     lowStockRecall,
     lowStockPrecision,
     costCuttingOptions,
+    feedbackItems,
+    calibratedSkus,
     passed,
     predictions: evaluated.map(({ predictedLow: _predictedLow, actualLow: _actualLow, ...row }) => row),
   }

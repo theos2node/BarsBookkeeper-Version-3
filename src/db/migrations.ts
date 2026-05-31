@@ -240,6 +240,41 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_backbone_predictions_run_risk ON backbone_predictions(run_id, low_stock_risk);
     `,
   },
+  {
+    id: 3,
+    name: 'backbone_feedback_calibration',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        prediction_id INTEGER NOT NULL REFERENCES backbone_predictions(id) ON DELETE CASCADE,
+        run_id INTEGER NOT NULL REFERENCES backbone_runs(id) ON DELETE CASCADE,
+        sku_id INTEGER NOT NULL REFERENCES skus(id),
+        count_event_id INTEGER NOT NULL REFERENCES inventory_events(id),
+        predicted_on_hand REAL NOT NULL,
+        actual_on_hand REAL NOT NULL,
+        error_quantity REAL NOT NULL,
+        absolute_error_quantity REAL NOT NULL,
+        bottle_error REAL NOT NULL,
+        evaluated_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (prediction_id, count_event_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS backbone_calibrations (
+        sku_id INTEGER PRIMARY KEY REFERENCES skus(id),
+        sample_count INTEGER NOT NULL DEFAULT 0,
+        mean_error_quantity REAL NOT NULL DEFAULT 0,
+        mean_abs_error_quantity REAL NOT NULL DEFAULT 0,
+        mean_bottle_error REAL NOT NULL DEFAULT 0,
+        usage_adjustment_daily REAL NOT NULL DEFAULT 0,
+        confidence_adjustment REAL NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_feedback_sku ON backbone_feedback(sku_id, evaluated_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_feedback_run ON backbone_feedback(run_id);
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

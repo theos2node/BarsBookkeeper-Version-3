@@ -56,7 +56,7 @@ npm run bbk -- review reverse <decision-id>
 
 ## Backbone
 
-The Backbone model is the terminal-first prediction layer. It listens to the same SQLite event ledger built from Toast sales, invoices, and sparse hand counts, then persists each run in `backbone_runs` and `backbone_predictions`.
+The Backbone model is the terminal-first prediction layer. It listens to the same SQLite event ledger built from Toast sales, invoices, and sparse hand counts, then persists each run in `backbone_runs` and `backbone_predictions`. Later hand counts are scored into `backbone_feedback` and rolled into `backbone_calibrations`, so sparse bottle counts ground the next prediction cycle instead of being treated as one-off corrections.
 
 ```sh
 npm run bbk -- backbone run --horizon-days 7
@@ -79,7 +79,7 @@ npm run bbk -- backbone simulate --env busy-month --scenario busy --days 30
 npm run bbk -- backbone matrix --env month-end-matrix --days 30
 ```
 
-The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, and a validation day. It passes only when bottle-count error, low-stock detection, and cost-cutting detection all clear deterministic thresholds. The matrix command runs the steady, busy, and slow scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database.
+The simulation creates Toast history, monthly-style hand counts, invoices, vendor pricing, and a validation day. It passes only when bottle-count error, low-stock detection, cost-cutting detection, and feedback calibration all clear deterministic thresholds. The matrix command runs the steady, busy, and slow scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database.
 
 ## Terminal Console
 

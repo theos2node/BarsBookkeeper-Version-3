@@ -100,6 +100,8 @@ export const backboneListen = async (args: string[], context: CommandContext): P
           runId: backbone.runId,
           predictions: backbone.predictionCount,
           lowStock: backbone.lowStockCount,
+          feedback: backbone.feedbackItems,
+          calibrated: backbone.calibratedSkus,
           costOptions: backbone.costCuttingOptions,
         },
       ])
@@ -151,6 +153,8 @@ export const backboneSimulate = async (args: string[], context: CommandContext):
       lowStockRecall: result.lowStockRecall,
       lowStockPrecision: result.lowStockPrecision,
       costCuttingOptions: result.costCuttingOptions,
+      feedbackItems: result.feedbackItems,
+      calibratedSkus: result.calibratedSkus,
     })
     context.terminal.section('Predictions')
     context.terminal.table(result.predictions)
@@ -210,6 +214,8 @@ export const backboneMatrix = async (args: string[], context: CommandContext): P
       lowStockRecall: result.lowStockRecall,
       lowStockPrecision: result.lowStockPrecision,
       costOptions: result.costCuttingOptions,
+      feedback: result.feedbackItems,
+      calibrated: result.calibratedSkus,
     })),
   )
 
@@ -253,6 +259,8 @@ const renderRun = (
     predictedStockouts: number
     lowStockCount: number
     costCuttingOptions: number
+    feedbackItems: number
+    calibratedSkus: number
     predictions: Array<{
       skuName: string
       predictedOnHand: number
@@ -262,6 +270,7 @@ const renderRun = (
       confidence: number
       recommendedOrderQty: number
       costSignal: string
+      calibrationSamples: number
     }>
   },
   context: CommandContext,
@@ -275,6 +284,8 @@ const renderRun = (
     predictedStockouts: result.predictedStockouts,
     lowStockCount: result.lowStockCount,
     costCuttingOptions: result.costCuttingOptions,
+    feedbackItems: result.feedbackItems,
+    calibratedSkus: result.calibratedSkus,
   })
   context.terminal.section('Top risks')
   context.terminal.table(
@@ -285,6 +296,7 @@ const renderRun = (
       risk: prediction.lowStockRisk,
       confidence: prediction.confidence,
       order: prediction.recommendedOrderQty,
+      learned: prediction.calibrationSamples,
       cost: prediction.costSignal,
     })),
   )

@@ -26,6 +26,7 @@ export type BackbonePrediction = {
   recommendedOrderQty: number
   estimatedCost: number | null
   costSignal: string
+  calibrationSamples: number
 }
 
 export type BackboneRunResult = {
@@ -37,6 +38,8 @@ export type BackboneRunResult = {
   predictedStockouts: number
   lowStockCount: number
   costCuttingOptions: number
+  feedbackItems: number
+  calibratedSkus: number
   predictions: BackbonePrediction[]
 }
 
@@ -45,6 +48,13 @@ type VendorCost = {
   unitCost: number | null
   packSize: number
   price: number | null
+}
+
+type Calibration = {
+  sampleCount: number
+  usageAdjustmentDaily: number
+  confidenceAdjustment: number
+  meanBottleError: number
 }
 
 const riskRank: Record<BackbonePrediction['lowStockRisk'], number> = {
@@ -80,6 +90,159 @@ const finishRun = (db: Db, runId: number, status: 'completed' | 'failed', metric
      SET status = ?, metrics_json = ?, completed_at = CURRENT_TIMESTAMP
      WHERE id = ?`,
   ).run(status, stringifyJson(metrics), runId)
+}
+
+const targetAsOf = (asOf: string, horizonDays: number): string => {
+  const date = new Date(asOf)
+  date.setUTCDate(date.getUTCDate() + horizonDays)
+  return date.toISOString()
+}
+
+const bottleSize = (db: Db, skuId: number): number => {
+  const row = db
+    .prepare(
+      `SELECT pack_size
+       FROM vendor_items
+       WHERE sku_id = ? AND active = 1
+       ORDER BY pack_size ASC
+       LIMIT 1`,
+    )
+    .get(skuId)
+  return Math.max(1, toNumber(row?.pack_size, 1000))
+}
+
+const updateCalibrationForSku = (db: Db, skuId: number): void => {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS sample_count,
+              AVG(error_quantity) AS mean_error,
+              AVG(absolute_error_quantity) AS mean_abs_error,
+              AVG(bottle_error) AS mean_bottle_error
+       FROM backbone_feedback
+       WHERE sku_id = ?`,
+    )
+    .get(skuId)
+
+  const sampleCount = toNumber(row?.sample_count)
+  if (sampleCount === 0) return
+  const meanError = toNumber(row?.mean_error)
+  const meanAbsError = toNumber(row?.mean_abs_error)
+  const meanBottleError = toNumber(row?.mean_bottle_error)
+  const usageAdjustmentDaily = round(-meanError / 7, 4)
+  const confidenceAdjustment = round(-Math.min(0.3, meanBottleError * 0.2), 3)
+
+  db.prepare(
+    `INSERT INTO backbone_calibrations
+     (sku_id, sample_count, mean_error_quantity, mean_abs_error_quantity, mean_bottle_error,
+      usage_adjustment_daily, confidence_adjustment, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(sku_id) DO UPDATE SET
+       sample_count = excluded.sample_count,
+       mean_error_quantity = excluded.mean_error_quantity,
+       mean_abs_error_quantity = excluded.mean_abs_error_quantity,
+       mean_bottle_error = excluded.mean_bottle_error,
+       usage_adjustment_daily = excluded.usage_adjustment_daily,
+       confidence_adjustment = excluded.confidence_adjustment,
+       updated_at = CURRENT_TIMESTAMP`,
+  ).run(skuId, sampleCount, meanError, meanAbsError, meanBottleError, usageAdjustmentDaily, confidenceAdjustment)
+}
+
+export const scoreBackboneFeedback = (db: Db, options: { asOf?: string } = {}): number => {
+  const asOf = options.asOf ?? new Date().toISOString()
+  const countRows = db
+    .prepare(
+      `SELECT e.id AS count_event_id,
+              e.sku_id,
+              e.occurred_at,
+              COALESCE(SUM(position.quantity), 0) AS actual_on_hand
+       FROM inventory_events e
+       JOIN inventory_events position
+         ON position.sku_id = e.sku_id
+        AND position.occurred_at <= e.occurred_at
+       WHERE e.event_type = 'adjustment'
+         AND e.occurred_at <= ?
+       GROUP BY e.id
+       ORDER BY e.occurred_at`,
+    )
+    .all(asOf)
+
+  let created = 0
+  const touchedSkus = new Set<number>()
+  for (const count of countRows) {
+    const skuId = toNumber(count.sku_id)
+    const countEventId = toNumber(count.count_event_id)
+    const occurredAt = toStringValue(count.occurred_at)
+    const prediction = db
+      .prepare(
+        `SELECT p.id AS prediction_id,
+                p.run_id,
+                p.predicted_on_hand,
+                r.as_of,
+                r.horizon_days
+         FROM backbone_predictions p
+         JOIN backbone_runs r ON r.id = p.run_id
+         WHERE p.sku_id = ?
+           AND r.status = 'completed'
+           AND datetime(r.as_of, '+' || r.horizon_days || ' days') <= datetime(?)
+           AND NOT EXISTS (
+             SELECT 1
+             FROM backbone_feedback f
+             WHERE f.prediction_id = p.id AND f.count_event_id = ?
+           )
+         ORDER BY datetime(r.as_of, '+' || r.horizon_days || ' days') DESC, p.id DESC
+         LIMIT 1`,
+      )
+      .get(skuId, occurredAt, countEventId)
+    if (!prediction) continue
+
+    const predictedOnHand = toNumber(prediction.predicted_on_hand)
+    const actualOnHand = toNumber(count.actual_on_hand)
+    const error = round(actualOnHand - predictedOnHand, 3)
+    const absoluteError = Math.abs(error)
+    const bottleError = round(absoluteError / bottleSize(db, skuId), 4)
+    const result = db.prepare(
+      `INSERT OR IGNORE INTO backbone_feedback
+       (prediction_id, run_id, sku_id, count_event_id, predicted_on_hand, actual_on_hand,
+        error_quantity, absolute_error_quantity, bottle_error, evaluated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      toNumber(prediction.prediction_id),
+      toNumber(prediction.run_id),
+      skuId,
+      countEventId,
+      predictedOnHand,
+      actualOnHand,
+      error,
+      absoluteError,
+      bottleError,
+      occurredAt,
+    )
+    if (toNumber(result.changes) > 0) {
+      created += 1
+      touchedSkus.add(skuId)
+    }
+  }
+
+  for (const skuId of touchedSkus) updateCalibrationForSku(db, skuId)
+  return created
+}
+
+const calibrationFor = (db: Db, skuId: number): Calibration => {
+  const row = db.prepare('SELECT * FROM backbone_calibrations WHERE sku_id = ?').get(skuId)
+  if (!row) {
+    return {
+      sampleCount: 0,
+      usageAdjustmentDaily: 0,
+      confidenceAdjustment: 0,
+      meanBottleError: 0,
+    }
+  }
+  return {
+    sampleCount: toNumber(row.sample_count),
+    usageAdjustmentDaily: toNumber(row.usage_adjustment_daily),
+    confidenceAdjustment: toNumber(row.confidence_adjustment),
+    meanBottleError: toNumber(row.mean_bottle_error),
+  }
 }
 
 const cheapestVendorCost = (db: Db, skuId: number): VendorCost | null => {
@@ -209,6 +372,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
   }
 
   return withTransaction(db, () => {
+    const feedbackItems = scoreBackboneFeedback(db, { asOf: resolved.asOf })
     const runId = createRun(db, resolved)
     try {
       generateForecasts(db, resolved)
@@ -226,7 +390,8 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
 
       for (const position of positions) {
         const forecast = forecastBySku.get(position.skuId)
-        const avgDailyUsage = forecast ? toNumber(forecast.avg_daily_usage) : position.avgDailyUsage
+        const calibration = calibrationFor(db, position.skuId)
+        const avgDailyUsage = Math.max(0, (forecast ? toNumber(forecast.avg_daily_usage) : position.avgDailyUsage) + calibration.usageAdjustmentDaily)
         const vendorCost = cheapestVendorCost(db, position.skuId)
         const latestCost = latestPurchaseCost(db, position.skuId)
         const countAge = latestCountAgeDays(db, position.skuId, resolved.asOf)
@@ -235,7 +400,10 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         const predictedOnHand = round(position.onHand - avgDailyUsage * resolved.horizonDays - shrinkDaily * resolved.horizonDays, 2)
         const predictedDaysRemaining = avgDailyUsage > 0 ? round(Math.max(0, predictedOnHand) / avgDailyUsage, 1) : null
         const confidencePenalty = countAge === null ? 0.15 : Math.min(0.25, countAge / 120)
-        const confidence = round(Math.max(0.25, Math.min(position.confidence, toNumber(forecast?.confidence, position.confidence)) - confidencePenalty), 2)
+        const confidence = round(
+          Math.max(0.25, Math.min(0.98, Math.min(position.confidence, toNumber(forecast?.confidence, position.confidence)) - confidencePenalty + calibration.confidenceAdjustment)),
+          2,
+        )
         const risk = riskFor({
           predictedOnHand,
           avgDailyUsage,
@@ -257,6 +425,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
           recommendedOrderQty: recommendation.quantity,
           estimatedCost: recommendation.estimatedCost,
           costSignal,
+          calibrationSamples: calibration.sampleCount,
         }
         db.prepare(
           `INSERT INTO backbone_predictions
@@ -283,6 +452,8 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
             shrinkDaily: round(shrinkDaily, 4),
             vendorCost,
             latestCost,
+            calibration,
+            targetAsOf: targetAsOf(resolved.asOf, resolved.horizonDays),
           }),
         )
         predictions.push(prediction)
@@ -298,6 +469,8 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         predictedStockouts: predictions.filter((prediction) => prediction.lowStockRisk === 'critical').length,
         lowStockCount: predictions.filter((prediction) => riskRank[prediction.lowStockRisk] >= riskRank.low).length,
         costCuttingOptions: predictions.filter((prediction) => prediction.costSignal !== 'none').length,
+        feedbackItems,
+        calibratedSkus: predictions.filter((prediction) => prediction.calibrationSamples > 0).length,
       }
       finishRun(db, runId, 'completed', metrics)
       return {
@@ -306,8 +479,8 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         horizonDays: resolved.horizonDays,
         usageWindowDays: resolved.usageWindowDays,
         ...metrics,
-        predictions,
-      }
+      predictions,
+    }
     } catch (error) {
       finishRun(db, runId, 'failed', { error: error instanceof Error ? error.message : String(error) })
       throw error
@@ -356,6 +529,7 @@ export const getLatestBackboneRun = (db: Db): BackboneRunResult | null => {
       recommendedOrderQty: toNumber(row.recommended_order_qty),
       estimatedCost: row.estimated_cost === null ? null : toNumber(row.estimated_cost),
       costSignal: toStringValue(row.cost_signal, 'none'),
+      calibrationSamples: parseJson<{ calibration?: Calibration }>(row.evidence_json, {}).calibration?.sampleCount ?? 0,
     }))
 
   const metrics = parseJson<Record<string, unknown>>(run.metrics_json, {})
@@ -368,6 +542,8 @@ export const getLatestBackboneRun = (db: Db): BackboneRunResult | null => {
     predictedStockouts: toNumber(metrics.predictedStockouts),
     lowStockCount: toNumber(metrics.lowStockCount),
     costCuttingOptions: toNumber(metrics.costCuttingOptions),
+    feedbackItems: toNumber(metrics.feedbackItems),
+    calibratedSkus: toNumber(metrics.calibratedSkus),
     predictions,
   }
 }
