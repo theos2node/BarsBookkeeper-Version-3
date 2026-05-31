@@ -108,7 +108,20 @@ process.exit(1)
     await expectCliOk(['brain', 'run'], dataDir)
     await expectCliOk(['backbone', 'run'], dataDir)
     const listenOutput = await expectCliOk(
-      ['backbone', 'listen', '--cycles', '2', '--interval-ms', '0', '--toast-file', join(fixturesDir, 'smoke-toast.json')],
+      [
+        'backbone',
+        'listen',
+        '--cycles',
+        '2',
+        '--interval-ms',
+        '0',
+        '--toast-file',
+        join(fixturesDir, 'smoke-toast.json'),
+        '--start',
+        '2026-05-10T00:00:00.000Z',
+        '--end',
+        '2026-05-11T00:00:00.000Z',
+      ],
       dataDir,
     )
     const backboneSimulation = await expectCliOk(['backbone', 'simulate', '--env', 'smoke', '--days', '30'], dataDir)
@@ -151,6 +164,7 @@ process.exit(1)
     ).toBe(1)
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_listener_cycles')).toBe(2)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_listener_cycles WHERE status = 'completed'")).toBe(2)
+    expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_toast_cursor WHERE last_end = '2026-05-11T00:00:00.000Z'")).toBe(1)
 
     await expectCliOk(['setup'], dataDir)
     await expectCliOk(['seed-demo'], dataDir)

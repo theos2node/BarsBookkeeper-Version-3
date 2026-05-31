@@ -302,6 +302,19 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_backbone_listener_cycles_status ON backbone_listener_cycles(status);
     `,
   },
+  {
+    id: 5,
+    name: 'backbone_toast_cursor',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_toast_cursor (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        last_start TEXT,
+        last_end TEXT,
+        last_source TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

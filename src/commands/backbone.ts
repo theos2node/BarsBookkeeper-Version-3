@@ -27,12 +27,19 @@ type ParsedOptions = {
   skipToast?: boolean
   scenario?: BackboneSimulationScenario
   maxAgeMinutes?: number
+  cursorLookbackMinutes?: number
 }
 
 type AuditCheck = {
   check: string
   status: 'pass' | 'warn' | 'fail'
   detail: string
+}
+
+type ToastWindow = {
+  start?: string
+  end?: string
+  explicit: boolean
 }
 
 export const backboneRun = async (args: string[], context: CommandContext): Promise<void> => {
@@ -297,6 +304,7 @@ const buildBackboneAudit = (db: any, maxAgeMinutes: number): AuditCheck[] => {
        LIMIT 1`,
     )
     .get()
+  const cursor = db.prepare('SELECT last_start, last_end, last_source, updated_at FROM backbone_toast_cursor WHERE id = 1').get()
   const failedCycles = toNumber(
     db
       .prepare(
@@ -385,6 +393,11 @@ const buildBackboneAudit = (db: any, maxAgeMinutes: number): AuditCheck[] => {
     status: feedbackCount > 0 && calibrationCount > 0 ? 'pass' : 'warn',
     detail: `${feedbackCount} feedback item${feedbackCount === 1 ? '' : 's'}, ${calibrationCount} calibrated SKU${calibrationCount === 1 ? '' : 's'}`,
   })
+  checks.push({
+    check: 'toast cursor',
+    status: cursor?.last_end ? 'pass' : 'warn',
+    detail: cursor?.last_end ? `${cursor.last_start ?? '?'} -> ${cursor.last_end} (${cursor.last_source ?? 'unknown'})` : 'no successful cursor yet',
+  })
 
   return checks
 }
@@ -398,20 +411,66 @@ const tryPullToast = async (
 
   const toastArgs: string[] = []
   if (options.toastFile) toastArgs.push('--file', options.toastFile)
-  if (options.toastStart) toastArgs.push('--start', options.toastStart)
-  if (options.toastEnd) toastArgs.push('--end', options.toastEnd)
+  const toastWindow = resolveToastWindow(db, options)
+  if (toastWindow.start) toastArgs.push('--start', toastWindow.start)
+  if (toastWindow.end) toastArgs.push('--end', toastWindow.end)
 
   try {
     const result = await pullToast(db, context.config, toastArgs)
+    if (toastWindow.start && toastWindow.end) {
+      updateToastCursor(db, {
+        start: toastWindow.start,
+        end: toastWindow.end,
+        source: result.source,
+      })
+    }
     return {
       ok: true,
-      summary: `${result.source}:${result.rowsPulled}/${result.ingest.recordsImported}`,
+      summary: `${result.source}:${result.rowsPulled}/${result.ingest.recordsImported}${toastWindow.start && toastWindow.end ? ` ${toastWindow.start}->${toastWindow.end}` : ''}`,
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     context.terminal.warn(`Toast pull skipped this cycle: ${message}`)
     return { ok: false, summary: `error:${message}`, error: message }
   }
+}
+
+const resolveToastWindow = (db: any, options: ParsedOptions): ToastWindow => {
+  if (options.toastStart || options.toastEnd) {
+    return {
+      start: options.toastStart,
+      end: options.toastEnd,
+      explicit: true,
+    }
+  }
+  if (options.toastFile) return { explicit: false }
+
+  const now = new Date()
+  const cursor = db.prepare('SELECT last_end FROM backbone_toast_cursor WHERE id = 1').get()
+  const lookbackMinutes = options.cursorLookbackMinutes ?? 48 * 60
+  const start = cursor?.last_end
+    ? String(cursor.last_end)
+    : new Date(now.getTime() - lookbackMinutes * 60_000).toISOString()
+  return {
+    start,
+    end: now.toISOString(),
+    explicit: false,
+  }
+}
+
+const updateToastCursor = (
+  db: any,
+  input: { start: string; end: string; source: string },
+): void => {
+  db.prepare(
+    `INSERT INTO backbone_toast_cursor (id, last_start, last_end, last_source, updated_at)
+     VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(id) DO UPDATE SET
+       last_start = excluded.last_start,
+       last_end = excluded.last_end,
+       last_source = excluded.last_source,
+       updated_at = CURRENT_TIMESTAMP`,
+  ).run(input.start, input.end, input.source)
 }
 
 const startListenerCycle = (db: any, startedAt: string): number =>
@@ -613,6 +672,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--max-age-minutes' && next) {
       parsed.maxAgeMinutes = nonNegativeNumber(next, '--max-age-minutes')
+      index += 1
+    } else if (arg === '--cursor-lookback-minutes' && next) {
+      parsed.cursorLookbackMinutes = positiveNumber(next, '--cursor-lookback-minutes')
       index += 1
     }
   }
