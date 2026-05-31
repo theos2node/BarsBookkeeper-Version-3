@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMaintainHistory, backboneMaintainService, backboneMatrix, backboneMemory, backbonePlan, backboneRecipeSuggestions, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
+import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMaintainHistory, backboneMaintainService, backboneMatrix, backboneMemory, backbonePlan, backboneRecipeSuggestions, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneTrust, backboneVerify, backboneVerifyHistory } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -132,6 +132,12 @@ export const createCommands = (
     usage: 'bbk backbone audit [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>] [--max-count-age-days <days>]',
     summary: 'Check Backbone listener, prediction, feedback, and signal health.',
     handler: backboneAudit,
+  },
+  {
+    path: ['backbone', 'trust'],
+    usage: 'bbk backbone trust [--limit <n>] [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>] [--max-count-age-days <days>]',
+    summary: 'Summarize Backbone readiness, verification, uncertainty, maintenance, and next actions.',
+    handler: backboneTrust,
   },
   {
     path: ['backbone', 'verify'],

@@ -1056,6 +1056,92 @@ export const backboneAudit = async (args: string[], context: CommandContext): Pr
   })
 }
 
+export const backboneTrust = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const limit = options.limit ?? 8
+  const maxAgeMinutes = options.maxAgeMinutes ?? 60
+  const maxRunAgeMinutes = options.maxRunAgeMinutes ?? maxAgeMinutes
+  const maxCountAgeDays = options.maxCountAgeDays ?? 45
+  context.terminal.title('Backbone trust report')
+
+  await withBackendDb(context.config, async (db: any) => {
+    const auditChecks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays })
+    const failures = auditChecks.filter((check) => check.status === 'fail')
+    const warnings = auditChecks.filter((check) => check.status === 'warn')
+    const gapRows = buildBackboneGapRows(db, { limit, maxCountAgeDays })
+    const gapSummary = buildBackboneGapSummary(db, 'base', gapRows, maxCountAgeDays)
+    const predictionRisk = buildPredictionTrustSummary(db)
+    const latestVerification = latestVerificationTrustRow(db)
+    const latestMaintenance = latestMaintenanceTrustRow(db)
+    const readinessScore = Math.max(0, Math.min(100, 100 - failures.length * 25 - warnings.length * 7 - Math.min(gapRows.length, 8) * 3))
+    const trustStatus = failures.length > 0
+      ? 'fail'
+      : warnings.length > 0 || gapRows.length > 0 || latestVerification.status !== 'passed'
+        ? 'warn'
+        : 'ready'
+
+    context.terminal.dump({
+      status: trustStatus,
+      readinessScore,
+      auditFailures: failures.length,
+      auditWarnings: warnings.length,
+      dataGaps: gapRows.length,
+      latestRunId: predictionRisk.latestRunId,
+      predictionCount: predictionRisk.predictionCount,
+      nonOkRisks: predictionRisk.nonOkRisks,
+      maxStockoutProbability: predictionRisk.maxStockoutProbability,
+      avgStockoutProbability: predictionRisk.avgStockoutProbability,
+      latestVerification: latestVerification.status,
+      latestMaintenance: latestMaintenance.status,
+      toastRecipeCoveragePct: gapSummary.toastRecipeCoveragePct,
+      latestCount: gapSummary.latestCount,
+      latestInvoice: gapSummary.latestInvoice,
+    })
+
+    context.terminal.section('Trust gates')
+    context.terminal.table([
+      {
+        gate: 'audit',
+        status: failures.length > 0 ? 'fail' : warnings.length > 0 ? 'warn' : 'pass',
+        detail: `${failures.length} fail, ${warnings.length} warn`,
+      },
+      {
+        gate: 'verification',
+        status: latestVerification.status || 'missing',
+        detail: latestVerification.detail,
+      },
+      {
+        gate: 'maintenance',
+        status: latestMaintenance.status || 'missing',
+        detail: latestMaintenance.detail,
+      },
+      {
+        gate: 'uncertainty risk',
+        status: predictionRisk.maxStockoutProbability >= 0.45 ? 'warn' : predictionRisk.predictionCount > 0 ? 'pass' : 'missing',
+        detail: `${predictionRisk.nonOkRisks} non-ok risk${predictionRisk.nonOkRisks === 1 ? '' : 's'}; max stockout ${predictionRisk.maxStockoutProbability}`,
+      },
+      {
+        gate: 'data gaps',
+        status: gapRows.length > 0 ? 'warn' : 'pass',
+        detail: `${gapRows.length} prioritized gap${gapRows.length === 1 ? '' : 's'}`,
+      },
+    ])
+
+    context.terminal.section('Next actions')
+    context.terminal.table(buildTrustActionRows(auditChecks, gapRows, limit))
+
+    if (failures.length > 0) {
+      throw new Error(`backbone_trust_failed:${failures.map((check) => check.check).join(',')}`)
+    }
+    context.terminal.status(
+      trustStatus === 'ready' ? 'ok' : 'warn',
+      trustStatus === 'ready'
+        ? 'Backbone trust report is ready.'
+        : `Backbone trust report passed with ${warnings.length + gapRows.length} warning signal${warnings.length + gapRows.length === 1 ? '' : 's'}.`,
+    )
+  })
+}
+
 const latestPredictionRow = (db: Db, sku?: string): any | null => {
   const skuFilter = sku ? 'AND p.sku_name LIKE ?' : ''
   const params = sku ? [`%${sku}%`] : []
@@ -1079,6 +1165,129 @@ const latestPredictionRow = (db: Db, sku?: string): any | null => {
        LIMIT 1`,
     )
     .get(...params)
+}
+
+const buildPredictionTrustSummary = (db: Db): {
+  latestRunId: number | ''
+  predictionCount: number
+  nonOkRisks: number
+  maxStockoutProbability: number
+  avgStockoutProbability: number
+} => {
+  const latestRun = db
+    .prepare(
+      `SELECT id
+       FROM backbone_runs
+       WHERE status = 'completed'
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .get()
+  if (!latestRun) {
+    return {
+      latestRunId: '',
+      predictionCount: 0,
+      nonOkRisks: 0,
+      maxStockoutProbability: 0,
+      avgStockoutProbability: 0,
+    }
+  }
+
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS prediction_count,
+              SUM(CASE WHEN low_stock_risk != 'ok' THEN 1 ELSE 0 END) AS non_ok_risks,
+              MAX(COALESCE(stockout_probability, 0)) AS max_stockout_probability,
+              AVG(COALESCE(stockout_probability, 0)) AS avg_stockout_probability
+       FROM backbone_predictions
+       WHERE run_id = ?`,
+    )
+    .get(toNumber(latestRun.id))
+
+  return {
+    latestRunId: toNumber(latestRun.id),
+    predictionCount: toNumber(row?.prediction_count),
+    nonOkRisks: toNumber(row?.non_ok_risks),
+    maxStockoutProbability: round(toNumber(row?.max_stockout_probability), 3),
+    avgStockoutProbability: round(toNumber(row?.avg_stockout_probability), 3),
+  }
+}
+
+const latestVerificationTrustRow = (db: Db): { status: string; detail: string } => {
+  const row = db
+    .prepare(
+      `SELECT status, scenario_count, passed_scenarios, failed_scenarios, completed_at, summary_json
+       FROM backbone_verifications
+       ORDER BY completed_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get()
+  if (!row) return { status: 'missing', detail: 'no persisted verification run' }
+
+  const summary = parseJson<{
+    worstRollingBottleMae?: number
+    minRollingUncertaintyCoverage?: number
+    maxRollingMeanBandBottles?: number
+  }>(row.summary_json, {})
+  const detail = `${row.passed_scenarios}/${row.scenario_count} scenarios at ${row.completed_at}; rollingMae ${summary.worstRollingBottleMae ?? ''}; bandCoverage ${summary.minRollingUncertaintyCoverage ?? ''}; bandBottles ${summary.maxRollingMeanBandBottles ?? ''}`
+  return { status: String(row.status), detail }
+}
+
+const latestMaintenanceTrustRow = (db: Db): { status: string; detail: string } => {
+  const row = db
+    .prepare(
+      `SELECT status, completed_at, audit_failures, audit_warnings, gap_count, snapshot_label
+       FROM backbone_maintenance_runs
+       ORDER BY completed_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get()
+  if (!row) return { status: 'missing', detail: 'no persisted maintenance run' }
+  return {
+    status: String(row.status),
+    detail: `${row.snapshot_label ?? 'maintenance'} at ${row.completed_at}; ${row.audit_failures} fail, ${row.audit_warnings} warn, ${row.gap_count} gap${toNumber(row.gap_count) === 1 ? '' : 's'}`,
+  }
+}
+
+const buildTrustActionRows = (
+  auditChecks: AuditCheck[],
+  gapRows: Array<Record<string, unknown>>,
+  limit: number,
+): Array<Record<string, unknown>> => {
+  const rows: Array<Record<string, unknown>> = []
+  for (const check of auditChecks.filter((row) => row.status !== 'pass')) {
+    rows.push({
+      priority: check.status === 'fail' ? 'critical' : 'medium',
+      source: 'audit',
+      target: check.check,
+      detail: check.detail,
+      action: trustActionForAuditCheck(check.check),
+    })
+  }
+  for (const gap of gapRows) {
+    rows.push({
+      priority: gap.priority,
+      source: 'gap',
+      target: gap.target,
+      detail: gap.detail,
+      action: gap.action,
+    })
+  }
+  return rows
+    .sort((left, right) => gapPriorityRank(String(left.priority)) - gapPriorityRank(String(right.priority)))
+    .slice(0, limit)
+}
+
+const trustActionForAuditCheck = (check: string): string => {
+  if (check.includes('listener')) return 'start or inspect backbone listen/service'
+  if (check.includes('prediction')) return 'run backbone run or listener cycle'
+  if (check.includes('count')) return 'ingest sparse count'
+  if (check.includes('recipe')) return 'run backbone recipe-suggestions'
+  if (check.includes('feedback') || check.includes('drift')) return 'run backbone verify or add later count'
+  if (check.includes('cursor')) return 'run successful Toast pull'
+  if (check.includes('cost')) return 'ingest recent invoice'
+  if (check.includes('low-stock')) return 'review backbone actions'
+  return 'inspect audit detail'
 }
 
 const horizonRiskRank: Record<string, number> = {

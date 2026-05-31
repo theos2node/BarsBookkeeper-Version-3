@@ -94,6 +94,7 @@ npm run bbk -- backbone memory
 npm run bbk -- backbone drift
 npm run bbk -- backbone explain --sku "Backbone Vodka 1L"
 npm run bbk -- backbone audit
+npm run bbk -- backbone trust
 npm run bbk -- backbone verify --env acceptance --days 60
 npm run bbk -- backbone acceptance --env acceptance-drill --days 60
 npm run bbk -- backbone verify-history
@@ -150,6 +151,8 @@ Use `bbk backbone snapshot --label <name>` before risky changes or as a schedule
 Use `bbk backbone maintain` for unattended health maintenance. It creates and verifies a SQLite snapshot, runs the operational audit, records prioritized data gaps, and persists the result in `backbone_maintenance_runs`; hard audit failures exit non-zero, while warnings and gaps are recorded for review. Use `bbk backbone maintain-history` to inspect recent maintenance runs after a LaunchAgent or terminal session finishes.
 
 Use `bbk backbone audit` as an operational trust gate. It checks for a recent listener heartbeat, fresh prediction run, listener-to-prediction linkage, sparse count grounding, recent listener failures, prediction coverage, low-stock signals, cost signals, feedback calibration, learning drift, and Toast cursor state. Hard failures exit non-zero; missing count, cost, calibration, drift, or cursor signals are warnings so a quiet bar day does not block operations. Use `--max-age-minutes` for listener heartbeat freshness, `--max-run-age-minutes` when prediction freshness needs a different threshold, and `--max-count-age-days` for sparse bottle-count cadence.
+
+Use `bbk backbone trust` for the compact operator view. It combines audit failures/warnings, latest verification results, uncertainty risk, maintenance history, data gaps, and concrete next actions into one terminal report; hard audit failures still exit non-zero.
 
 Use `bbk backbone verify` as the acceptance gate for model redesign work. It creates fresh isolated environments, runs the validation-day simulation and rolling backtest for each scenario, and exits non-zero unless every scenario passes bottle-count accuracy, low-stock detection, cost-cutting detection, shrink detection, feedback, and calibration thresholds. Each verification run is persisted in `backbone_verifications`; use `bbk backbone verify-history` to inspect recent pass/fail history after terminal sessions end.
 
