@@ -766,8 +766,10 @@ const buildToastIntakeSummary = (db: Db, target: string): ToastIntakeSummary => 
       .prepare(
         `SELECT COUNT(DISTINCT source_document_id) AS count
          FROM evidence_items
+         JOIN openclaw_decisions d ON d.id = evidence_items.decision_id
          WHERE evidence_type = 'toast_missing_recipe'
-           AND source_document_id IS NOT NULL`,
+           AND source_document_id IS NOT NULL
+           AND d.state = 'needs_review'`,
       )
       .get()?.count,
   )
@@ -812,10 +814,12 @@ const buildToastIntakeSummary = (db: Db, target: string): ToastIntakeSummary => 
 const buildMissingRecipeRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
   const rows = db
     .prepare(
-      `SELECT summary, payload_json, amount, occurred_at
-       FROM evidence_items
-       WHERE evidence_type = 'toast_missing_recipe'
-       ORDER BY occurred_at DESC, id DESC
+      `SELECT e.summary, e.payload_json, e.amount, e.occurred_at
+       FROM evidence_items e
+       JOIN openclaw_decisions d ON d.id = e.decision_id
+       WHERE e.evidence_type = 'toast_missing_recipe'
+         AND d.state = 'needs_review'
+       ORDER BY e.occurred_at DESC, e.id DESC
        LIMIT ?`,
     )
     .all(Math.max(limit * 3, limit))

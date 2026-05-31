@@ -9,6 +9,7 @@ import { ensureSku } from '../src/db/repositories.js'
 import { seedDemoData } from '../src/db/seed.js'
 import { generateForecasts } from '../src/forecast/index.js'
 import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
+import { mapToastRecipeAndBackfill } from '../src/ingest/recipes.js'
 import { generateVendorGroupedOrderRecommendations } from '../src/orders/index.js'
 
 describe('backend data slice', () => {
@@ -175,6 +176,46 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(advisory.applied).toBe(false)
     expect(advisory.next).toContain('advisory review')
     expect(db.prepare('SELECT state FROM openclaw_decisions WHERE id = ?').get(advisoryId)?.state).toBe('needs_review')
+  })
+
+  it('maps missing Toast recipes and backfills unresolved consumption idempotently', () => {
+    seedDemoData(db, asOf)
+    ingestToastSales(db, [
+      {
+        externalId: 'toast-smoke-martini',
+        occurredAt: '2026-05-11T14:00:00.000Z',
+        menuItem: 'Smoke Test Martini',
+        quantitySold: 2,
+      },
+    ])
+
+    expect(db.prepare("SELECT COUNT(*) AS count FROM evidence_items WHERE evidence_type = 'toast_missing_recipe'").get()?.count).toBe(1)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM openclaw_decisions WHERE state = 'needs_review'").get()?.count).toBe(1)
+
+    const mapped = mapToastRecipeAndBackfill(db, {
+      menuItemName: 'Smoke Test Martini',
+      skuName: 'House Vodka 1L',
+      quantity: 75,
+      unit: 'ml',
+    })
+
+    expect(mapped.backfilledEvents).toBe(1)
+    expect(mapped.suppressedReviews).toBe(1)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM evidence_items WHERE evidence_type = 'toast_sale'").get()?.count).toBe(1)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM openclaw_decisions WHERE state = 'needs_review'").get()?.count).toBe(0)
+
+    const skuId = ensureSku(db, { name: 'House Vodka 1L', unit: 'ml' })
+    expect(getInventoryPosition(db, skuId, { asOf: '2026-05-11T15:00:00.000Z' })?.onHand).toBe(4850)
+
+    const repeated = mapToastRecipeAndBackfill(db, {
+      menuItemName: 'Smoke Test Martini',
+      skuName: 'House Vodka 1L',
+      quantity: 75,
+      unit: 'ml',
+    })
+    expect(repeated.backfilledEvents).toBe(0)
+    expect(repeated.skippedExistingEvents).toBe(1)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM inventory_events WHERE event_type = 'sale'").get()?.count).toBe(1)
   })
 
   it('generates forecasts and vendor-grouped order recommendations', () => {

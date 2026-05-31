@@ -44,6 +44,7 @@ Operational commands reserved for live integrations:
 npm run bbk -- toast connect --restaurants <toast-restaurant-id>
 npm run bbk -- toast pull --start 2026-05-10T00:00:00.000Z --end 2026-05-11T00:00:00.000Z
 npm run bbk -- toast pull --file ./samples/toast-orders.json
+npm run bbk -- toast map-recipe "Smoke Test Martini" "House Vodka 1L" 75 ml
 npm run bbk -- brain run
 npm run bbk -- backbone run
 npm run bbk -- backbone listen
@@ -81,6 +82,8 @@ npm run bbk -- backbone env-prune --older-than-days 14
 `bbk backbone plan` runs the model across multiple horizons and summarizes which bottles become risky first, so ordering can move before a low-stock item becomes urgent.
 
 `bbk backbone intake` shows how much Toast history is becoming usable ingredient consumption. It reports recipe coverage, mapped consumption events, missing-recipe backlog, and recent mapped Toast consumption so blind spots are visible before they pollute predictions.
+
+When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit>`. The command stores the recipe ingredient, backfills prior unresolved Toast sale documents into inventory consumption, and suppresses the related missing-recipe review task once the backlog has been made usable.
 
 `bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
 

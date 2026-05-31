@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { parseJson, toNumber, toStringValue } from '../db/database.js'
+import { mapToastRecipeAndBackfill } from '../ingest/recipes.js'
 import { OperatorInputError, runServiceCommand, requirePathArg } from './service-command.js'
 import { BackendUnavailableError, callBackend, withBackendDb } from './backend.js'
 import type { CommandContext } from './types.js'
@@ -50,6 +51,17 @@ export const toastPull = async (args: string[], context: CommandContext): Promis
     withDb: true,
     args: (rawArgs, ctx, { db }) => [db, ctx.config, rawArgs],
   })
+
+export const toastMapRecipe = async (args: string[], context: CommandContext): Promise<void> => {
+  const parsed = parseRecipeMapArgs(args)
+  context.terminal.title('Toast recipe map')
+
+  await withBackendDb(context.config, async (db: any) => {
+    const result = mapToastRecipeAndBackfill(db, parsed)
+    context.terminal.success(`Mapped ${result.menuItemName} to ${result.skuName}.`)
+    context.terminal.dump(result)
+  })
+}
 
 export const brainRun = async (args: string[], context: CommandContext): Promise<void> =>
   runServiceCommand(args, context, {
@@ -217,4 +229,42 @@ const reviewActionHint = (row: Record<string, unknown>): string => {
   if (kind === 'source_freshness_review') return 'refresh, then dismiss'
   if (kind === 'inventory_risk_review') return 'resolve, then dismiss'
   return 'dismiss'
+}
+
+const parseRecipeMapArgs = (args: string[]) => {
+  const values: string[] = []
+  let yieldQuantity: number | undefined
+  let category: string | undefined
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const next = args[index + 1]
+    if (arg === '--yield' && next) {
+      yieldQuantity = toNumber(next)
+      index += 1
+    } else if (arg === '--category' && next) {
+      category = next
+      index += 1
+    } else {
+      values.push(arg)
+    }
+  }
+
+  const [menuItemName, skuName, quantityRaw, unit] = values
+  const quantity = toNumber(quantityRaw)
+  if (!menuItemName || !skuName || !quantityRaw || !unit || quantity <= 0) {
+    throw new OperatorInputError(
+      'Missing or invalid Toast recipe map arguments.',
+      'usage: bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit> [--yield <n>] [--category <name>]',
+    )
+  }
+
+  return {
+    menuItemName,
+    skuName,
+    quantity,
+    unit,
+    yieldQuantity,
+    category,
+  }
 }

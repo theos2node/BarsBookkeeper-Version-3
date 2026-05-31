@@ -4,6 +4,7 @@ import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
 import { seedDemoData } from '../src/db/seed.js'
 import { ingestCounts, ingestToastSales } from '../src/ingest/index.js'
+import { mapToastRecipeAndBackfill } from '../src/ingest/recipes.js'
 import { flattenToastOrders } from '../src/ingest/toast.js'
 
 describe('OpenClaw and Toast prototype integration', () => {
@@ -90,6 +91,31 @@ describe('OpenClaw and Toast prototype integration', () => {
     expect(reviewTitles.some((title) => title.includes('Off Menu Martini'))).toBe(true)
     expect(reviewTitles.some((title) => title.includes('inventory'))).toBe(true)
     expect(reviewTitles.some((title) => title.includes('seed source'))).toBe(false)
+  })
+
+  it('does not recreate a missing-recipe task after recipe mapping backfills the Toast document', async () => {
+    seedDemoData(db, '2026-05-11T12:00:00.000Z')
+    ingestToastSales(db, [
+      {
+        externalId: 'toast-mapped-later',
+        occurredAt: '2026-05-11T14:00:00.000Z',
+        menuItem: 'Off Menu Martini',
+        quantitySold: 3,
+      },
+    ])
+    mapToastRecipeAndBackfill(db, {
+      menuItemName: 'Off Menu Martini',
+      skuName: 'House Vodka 1L',
+      quantity: 75,
+      unit: 'ml',
+    })
+
+    await runOpenClawBrain(db)
+
+    const recipeReviews = db
+      .prepare("SELECT title FROM openclaw_decisions WHERE state = 'needs_review' AND title LIKE '%Off Menu Martini%'")
+      .all()
+    expect(recipeReviews).toHaveLength(0)
   })
 
   it('refreshes existing inventory risk tasks instead of duplicating them', async () => {

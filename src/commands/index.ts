@@ -1,4 +1,4 @@
-import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
+import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
 import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneIntake, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
@@ -54,6 +54,12 @@ export const createCommands = (
     usage: 'bbk toast pull',
     summary: 'Pull Toast sales data.',
     handler: toastPull,
+  },
+  {
+    path: ['toast', 'map-recipe'],
+    usage: 'bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit> [--yield <n>]',
+    summary: 'Map a Toast menu item recipe ingredient and backfill missed Toast consumption.',
+    handler: toastMapRecipe,
   },
   {
     path: ['brain', 'run'],
