@@ -31,6 +31,7 @@ type ParsedOptions = {
   scenario?: BackboneSimulationScenario
   maxAgeMinutes?: number
   maxRunAgeMinutes?: number
+  maxCountAgeDays?: number
   recoverStaleMinutes?: number
   cursorLookbackMinutes?: number
   minSamples?: number
@@ -291,10 +292,11 @@ export const backboneAudit = async (args: string[], context: CommandContext): Pr
   const options = parseOptions(args)
   const maxAgeMinutes = options.maxAgeMinutes ?? 60
   const maxRunAgeMinutes = options.maxRunAgeMinutes ?? maxAgeMinutes
+  const maxCountAgeDays = options.maxCountAgeDays ?? 45
   context.terminal.title('Backbone audit')
 
   await withBackendDb(context.config, async (db: any) => {
-    const checks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes })
+    const checks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays })
     context.terminal.table(checks)
 
     const failures = checks.filter((check) => check.status === 'fail')
@@ -642,7 +644,7 @@ export const backboneMatrix = async (args: string[], context: CommandContext): P
 
 const buildBackboneAudit = (
   db: any,
-  options: { maxAgeMinutes: number; maxRunAgeMinutes: number },
+  options: { maxAgeMinutes: number; maxRunAgeMinutes: number; maxCountAgeDays: number },
 ): AuditCheck[] => {
   const latestRun = db
     .prepare(
@@ -662,6 +664,15 @@ const buildBackboneAudit = (
     )
     .get()
   const cursor = db.prepare('SELECT last_start, last_end, last_source, updated_at FROM backbone_toast_cursor WHERE id = 1').get()
+  const countGrounding = db
+    .prepare(
+      `SELECT COUNT(*) AS count_events,
+              COUNT(DISTINCT sku_id) AS counted_skus,
+              MAX(occurred_at) AS latest_count_at
+       FROM inventory_events
+       WHERE event_type = 'adjustment'`,
+    )
+    .get()
   const failedCycles = toNumber(
     db
       .prepare(
@@ -721,6 +732,18 @@ const buildBackboneAudit = (
     check: 'prediction coverage',
     status: predictionCount > 0 ? 'pass' : 'fail',
     detail: `${predictionCount} stored prediction${predictionCount === 1 ? '' : 's'}`,
+  })
+
+  const countEvents = toNumber(countGrounding?.count_events)
+  const countedSkus = toNumber(countGrounding?.counted_skus)
+  const latestCountAt = countGrounding?.latest_count_at ? String(countGrounding.latest_count_at) : ''
+  const countAgeDays = latestCountAt ? ageMinutes(latestCountAt) / (24 * 60) : Number.POSITIVE_INFINITY
+  checks.push({
+    check: 'count grounding',
+    status: countEvents > 0 && countAgeDays <= options.maxCountAgeDays ? 'pass' : 'warn',
+    detail: countEvents > 0
+      ? `${countEvents} count event${countEvents === 1 ? '' : 's'} across ${countedSkus} SKU${countedSkus === 1 ? '' : 's'}; latest ${Number(countAgeDays.toFixed(1))}d old; max ${options.maxCountAgeDays}d`
+      : 'no sparse hand counts have grounded Backbone yet',
   })
 
   if (!latestCycle) {
@@ -1099,6 +1122,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--max-run-age-minutes' && next) {
       parsed.maxRunAgeMinutes = nonNegativeNumber(next, '--max-run-age-minutes')
+      index += 1
+    } else if (arg === '--max-count-age-days' && next) {
+      parsed.maxCountAgeDays = nonNegativeNumber(next, '--max-count-age-days')
       index += 1
     } else if (arg === '--recover-stale-minutes' && next) {
       parsed.recoverStaleMinutes = nonNegativeNumber(next, '--recover-stale-minutes')

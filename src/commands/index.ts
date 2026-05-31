@@ -75,7 +75,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'audit'],
-    usage: 'bbk backbone audit [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>]',
+    usage: 'bbk backbone audit [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>] [--max-count-age-days <days>]',
     summary: 'Check Backbone listener, prediction, feedback, and signal health.',
     handler: backboneAudit,
   },
