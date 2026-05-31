@@ -32,6 +32,8 @@ export type BackboneSimulationResult = {
   maxBottleError: number
   lowStockRecall: number
   lowStockPrecision: number
+  uncertaintyCoverage: number
+  meanBandBottles: number
   costCuttingOptions: number
   feedbackItems: number
   calibratedSkus: number
@@ -41,6 +43,8 @@ export type BackboneSimulationResult = {
     predictedOnHand: number
     actualOnHand: number
     bottleError: number
+    bandBottles: number
+    inBand: boolean
     risk: string
     costSignal: string
   }>
@@ -61,6 +65,8 @@ export type BackboneRollingBacktestResult = {
   maxBottleError: number
   lowStockRecall: number
   lowStockPrecision: number
+  uncertaintyCoverage: number
+  meanBandBottles: number
   costCuttingOptions: number
   shrinkSignals: number
   passed: boolean
@@ -71,6 +77,8 @@ export type BackboneRollingBacktestResult = {
     predictedOnHand: number
     actualOnHand: number
     bottleError: number
+    bandBottles: number
+    inBand: boolean
     risk: string
     actualLow: boolean
     costSignal: string
@@ -271,12 +279,16 @@ export const runBackboneAccuracySimulation = (
     .map((prediction) => {
       const actual = actualBySku.get(prediction.skuId)
       const actualOnHand = actual?.onHand ?? 0
-      const bottleError = Math.abs(prediction.predictedOnHand - actualOnHand) / bottleSize(db, prediction.skuId)
+      const size = bottleSize(db, prediction.skuId)
+      const bottleError = Math.abs(prediction.predictedOnHand - actualOnHand) / size
+      const inBand = actualOnHand >= prediction.predictedLowerOnHand && actualOnHand <= prediction.predictedUpperOnHand
       return {
         sku: prediction.skuName,
         predictedOnHand: round(prediction.predictedOnHand, 2),
         actualOnHand: round(actualOnHand, 2),
         bottleError: round(bottleError, 3),
+        bandBottles: round((prediction.predictedUpperOnHand - prediction.predictedLowerOnHand) / size, 3),
+        inBand,
         risk: prediction.lowStockRisk,
         costSignal: prediction.costSignal,
         predictedLow: highRisk(prediction),
@@ -291,11 +303,13 @@ export const runBackboneAccuracySimulation = (
   const actualLow = evaluated.filter((row) => row.actualLow).length
   const lowStockRecall = round(actualLow === 0 ? 1 : truePositives / actualLow, 3)
   const lowStockPrecision = round(predictedLow === 0 ? 1 : truePositives / predictedLow, 3)
+  const uncertaintyCoverage = round(evaluated.filter((row) => row.inBand).length / Math.max(1, evaluated.length), 3)
+  const meanBandBottles = round(evaluated.reduce((total, row) => total + row.bandBottles, 0) / Math.max(1, evaluated.length), 3)
   const costCuttingOptions = evaluated.filter((row) => row.costSignal !== 'none').length
   const feedbackItems = scoreBackboneFeedback(db, { asOf: actualAsOf })
   const calibratedSkus = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
   const shrinkDetected = profile.name !== 'shrink' || evaluated.some((row) => row.costSignal.includes('audit shrink'))
-  const passed = bottleMae <= 0.1 && maxBottleError <= 0.25 && lowStockRecall >= 1 && lowStockPrecision >= 0.75 && costCuttingOptions > 0 && shrinkDetected
+  const passed = bottleMae <= 0.1 && maxBottleError <= 0.25 && lowStockRecall >= 1 && lowStockPrecision >= 0.75 && uncertaintyCoverage >= 1 && meanBandBottles <= 1.5 && costCuttingOptions > 0 && shrinkDetected
 
   return {
     scenario: profile.name,
@@ -306,6 +320,8 @@ export const runBackboneAccuracySimulation = (
     maxBottleError,
     lowStockRecall,
     lowStockPrecision,
+    uncertaintyCoverage,
+    meanBandBottles,
     costCuttingOptions,
     feedbackItems,
     calibratedSkus,
@@ -358,13 +374,17 @@ export const runBackboneRollingBacktest = (
       const key = skuKey(prediction.skuName)
       if (!key) continue
       const actual = actualOnHand(start, targetDay, profile, key)
+      const size = bottleSize(db, prediction.skuId)
+      const inBand = actual >= prediction.predictedLowerOnHand && actual <= prediction.predictedUpperOnHand
       rows.push({
         asOf,
         targetAsOf: targetAsOfValue,
         sku: prediction.skuName,
         predictedOnHand: round(prediction.predictedOnHand, 2),
         actualOnHand: round(actual, 2),
-        bottleError: round(Math.abs(prediction.predictedOnHand - actual) / bottleSize(db, prediction.skuId), 3),
+        bottleError: round(Math.abs(prediction.predictedOnHand - actual) / size, 3),
+        bandBottles: round((prediction.predictedUpperOnHand - prediction.predictedLowerOnHand) / size, 3),
+        inBand,
         risk: prediction.lowStockRisk,
         actualLow: actual < parLevels[key],
         costSignal: prediction.costSignal,
@@ -381,6 +401,8 @@ export const runBackboneRollingBacktest = (
   const actualLow = rows.filter((row) => row.actualLow).length
   const lowStockRecall = round(actualLow === 0 ? 1 : truePositives / actualLow, 3)
   const lowStockPrecision = round(predictedLow === 0 ? 1 : truePositives / predictedLow, 3)
+  const uncertaintyCoverage = round(rows.filter((row) => row.inBand).length / Math.max(1, rows.length), 3)
+  const meanBandBottles = round(rows.reduce((total, row) => total + row.bandBottles, 0) / Math.max(1, rows.length), 3)
   const costCuttingOptions = rows.filter((row) => row.costSignal !== 'none').length
   const shrinkSignals = rows.filter((row) => row.costSignal.includes('audit shrink')).length
   const shrinkDetected = profile.name !== 'shrink' || shrinkSignals > 0
@@ -390,6 +412,8 @@ export const runBackboneRollingBacktest = (
     maxBottleError <= 0.5 &&
     lowStockRecall >= 0.9 &&
     lowStockPrecision >= 0.7 &&
+    uncertaintyCoverage >= 0.95 &&
+    meanBandBottles <= 1.75 &&
     costCuttingOptions > 0 &&
     feedbackItems >= 3 &&
     calibratedSkus >= 3 &&
@@ -410,6 +434,8 @@ export const runBackboneRollingBacktest = (
     maxBottleError,
     lowStockRecall,
     lowStockPrecision,
+    uncertaintyCoverage,
+    meanBandBottles,
     costCuttingOptions,
     shrinkSignals,
     passed,

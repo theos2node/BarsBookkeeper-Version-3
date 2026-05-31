@@ -24,6 +24,8 @@ describe('Backbone prediction model', () => {
     expect(result.maxBottleError).toBeLessThanOrEqual(0.25)
     expect(result.lowStockRecall).toBe(1)
     expect(result.lowStockPrecision).toBeGreaterThanOrEqual(0.75)
+    expect(result.uncertaintyCoverage).toBe(1)
+    expect(result.meanBandBottles).toBeLessThanOrEqual(1.5)
     expect(result.costCuttingOptions).toBeGreaterThan(0)
     expect(result.feedbackItems).toBeGreaterThanOrEqual(3)
     expect(result.calibratedSkus).toBeGreaterThanOrEqual(3)
@@ -71,6 +73,8 @@ describe('Backbone prediction model', () => {
         expect(result.passed, scenario).toBe(true)
         expect(result.bottleMae, scenario).toBeLessThanOrEqual(0.1)
         expect(result.lowStockRecall, scenario).toBe(1)
+        expect(result.uncertaintyCoverage, scenario).toBe(1)
+        expect(result.meanBandBottles, scenario).toBeLessThanOrEqual(1.5)
         expect(result.costCuttingOptions, scenario).toBeGreaterThan(0)
         expect(result.feedbackItems, scenario).toBeGreaterThanOrEqual(3)
       } finally {
@@ -137,6 +141,8 @@ describe('Backbone prediction model', () => {
     expect(result.maxBottleError).toBeLessThanOrEqual(0.5)
     expect(result.lowStockRecall).toBeGreaterThanOrEqual(0.9)
     expect(result.lowStockPrecision).toBeGreaterThanOrEqual(0.7)
+    expect(result.uncertaintyCoverage).toBeGreaterThanOrEqual(0.95)
+    expect(result.meanBandBottles).toBeLessThanOrEqual(1.75)
     expect(result.shrinkSignals).toBeGreaterThan(0)
   })
 
