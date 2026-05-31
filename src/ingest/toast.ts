@@ -245,11 +245,23 @@ const readRowsFromFile = async (path: string, cwd = process.cwd()): Promise<Toas
   const text = await readFile(filePath, 'utf8')
   try {
     const parsed = JSON.parse(text) as unknown
+    if (isToastSalesRows(parsed)) return parsed
     return flattenToastOrders(parsed)
   } catch {
     return parseJsonOrCsv<ToastSalesRow>(text)
   }
 }
+
+const isToastSalesRows = (payload: unknown): payload is ToastSalesRow[] =>
+  Array.isArray(payload) &&
+  payload.every((row) => {
+    if (typeof row !== 'object' || row === null) return false
+    const record = row as Record<string, unknown>
+    return (
+      typeof (record.menuItem ?? record.menuItemName) === 'string' &&
+      (typeof (record.quantitySold ?? record.quantity) === 'number' || typeof (record.quantitySold ?? record.quantity) === 'string')
+    )
+  })
 
 const defaultWindow = () => {
   const end = new Date()

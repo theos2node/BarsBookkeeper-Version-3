@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runOpenClawBrain } from '../src/brain/openclaw.js'
 import { openDatabase, type Db } from '../src/db/database.js'
@@ -5,7 +8,7 @@ import { migrateDatabase } from '../src/db/migrations.js'
 import { seedDemoData } from '../src/db/seed.js'
 import { ingestCounts, ingestToastSales } from '../src/ingest/index.js'
 import { mapToastRecipeAndBackfill } from '../src/ingest/recipes.js'
-import { flattenToastOrders } from '../src/ingest/toast.js'
+import { flattenToastOrders, pullToast } from '../src/ingest/toast.js'
 
 describe('OpenClaw and Toast prototype integration', () => {
   let db: Db
@@ -68,6 +71,47 @@ describe('OpenClaw and Toast prototype integration', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]?.menuItem).toBe('House Mule')
     expect(rows[0]?.quantitySold).toBe(1)
+  })
+
+  it('imports already-normalized Toast JSON rows from file', async () => {
+    seedDemoData(db, '2026-05-11T12:00:00.000Z')
+    const dataDir = await mkdtemp(join(tmpdir(), 'bbk-flat-toast-'))
+    const filePath = join(dataDir, 'toast-sales.json')
+    try {
+      await writeFile(
+        filePath,
+        JSON.stringify([
+          {
+            externalId: 'flat-toast-row',
+            occurredAt: '2026-05-11T14:00:00.000Z',
+            menuItem: 'Flat File Martini',
+            quantitySold: 2,
+          },
+        ]),
+        'utf8',
+      )
+
+      const result = await pullToast(
+        db,
+        {
+          dataDir,
+          dbPath: join(dataDir, 'barsbookkeeper.sqlite'),
+          filesDir: join(dataDir, 'files'),
+          logicModel: 'test',
+          logicReasoningEffort: 'low',
+          fastModel: 'test',
+          fastReasoningEffort: 'low',
+        },
+        ['--file', filePath],
+      )
+
+      expect(result.rowsPulled).toBe(1)
+      expect(result.ingest.recordsImported).toBe(0)
+      expect(result.ingest.errors).toBe(1)
+      expect(db.prepare("SELECT COUNT(*) AS count FROM evidence_items WHERE evidence_type = 'toast_missing_recipe'").get()?.count).toBe(1)
+    } finally {
+      await rm(dataDir, { recursive: true, force: true })
+    }
   })
 
   it('creates review tasks from missing Toast recipes and at-risk inventory', async () => {

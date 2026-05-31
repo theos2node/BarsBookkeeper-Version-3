@@ -9,7 +9,7 @@ import { ensureSku } from '../src/db/repositories.js'
 import { seedDemoData } from '../src/db/seed.js'
 import { generateForecasts } from '../src/forecast/index.js'
 import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
-import { mapToastRecipeAndBackfill } from '../src/ingest/recipes.js'
+import { mapToastRecipeAndBackfill, suggestToastRecipeMappings } from '../src/ingest/recipes.js'
 import { generateVendorGroupedOrderRecommendations } from '../src/orders/index.js'
 
 describe('backend data slice', () => {
@@ -217,6 +217,29 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(repeated.backfilledEvents).toBe(0)
     expect(repeated.skippedExistingEvents).toBe(1)
     expect(db.prepare("SELECT COUNT(*) AS count FROM inventory_events WHERE event_type = 'sale'").get()?.count).toBe(1)
+  })
+
+  it('suggests conservative mappings for unresolved Toast recipes without mutating inventory', () => {
+    seedDemoData(db, asOf)
+    ingestToastSales(db, [
+      {
+        externalId: 'toast-suggestion-martini',
+        occurredAt: '2026-05-11T14:00:00.000Z',
+        menuItem: 'Smoke Test Martini',
+        quantitySold: 3,
+      },
+    ])
+
+    const suggestions = suggestToastRecipeMappings(db)
+    expect(suggestions.some((suggestion) =>
+      suggestion.menuItemName === 'Smoke Test Martini' &&
+      suggestion.suggestedSkuName === 'House Vodka 1L' &&
+      suggestion.suggestedQuantity === 75 &&
+      suggestion.suggestedUnit === 'ml' &&
+      suggestion.command.includes('toast map-recipe'),
+    )).toBe(true)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM inventory_events WHERE event_type = 'sale'").get()?.count).toBe(0)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM openclaw_decisions WHERE state = 'needs_review'").get()?.count).toBe(1)
   })
 
   it('generates forecasts and vendor-grouped order recommendations', () => {

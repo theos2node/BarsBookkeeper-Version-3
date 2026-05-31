@@ -87,6 +87,7 @@ npm run bbk -- backbone maintain
 npm run bbk -- backbone maintain-history
 npm run bbk -- backbone actions
 npm run bbk -- backbone intake
+npm run bbk -- backbone recipe-suggestions
 npm run bbk -- backbone gaps
 npm run bbk -- backbone accuracy
 npm run bbk -- backbone memory
@@ -104,7 +105,9 @@ npm run bbk -- backbone env-prune --older-than-days 14
 
 `bbk backbone plan` runs the model across multiple horizons and summarizes which bottles become risky first, so ordering can move before a low-stock item becomes urgent.
 
-`bbk backbone intake` shows how much Toast history is becoming usable ingredient consumption. It reports recipe coverage, mapped consumption events, missing-recipe backlog, and recent mapped Toast consumption so blind spots are visible before they pollute predictions.
+`bbk backbone intake` shows how much Toast history is becoming usable ingredient consumption. It reports recipe coverage, mapped consumption events, missing-recipe backlog, conservative recipe suggestions, and recent mapped Toast consumption so blind spots are visible before they pollute predictions.
+
+`bbk backbone recipe-suggestions` turns repeated unmapped Toast sales into reviewable `toast map-recipe` candidates from known SKUs and existing recipe memory. It never mutates inventory by itself; apply a suggestion only after checking the quantity and SKU.
 
 `bbk backbone gaps` prioritizes the smallest missing inputs that would most improve the model: unmapped Toast recipes, stale or missing sparse counts, missing invoice/vendor costs, and risky predictions that still lack calibration memory.
 

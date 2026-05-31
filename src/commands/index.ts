@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMaintainHistory, backboneMaintainService, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
+import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMaintainHistory, backboneMaintainService, backboneMatrix, backboneMemory, backbonePlan, backboneRecipeSuggestions, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -174,6 +174,12 @@ export const createCommands = (
     usage: 'bbk backbone intake [--env <name>] [--limit <n>]',
     summary: 'Show Toast recipe coverage and consumption entering Backbone learning.',
     handler: backboneIntake,
+  },
+  {
+    path: ['backbone', 'recipe-suggestions'],
+    usage: 'bbk backbone recipe-suggestions [--env <name>] [--limit <n>]',
+    summary: 'Suggest conservative Toast recipe mappings from known SKUs and unmapped sales.',
+    handler: backboneRecipeSuggestions,
   },
   {
     path: ['backbone', 'gaps'],

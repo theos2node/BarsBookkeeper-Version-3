@@ -13,6 +13,7 @@ import {
 } from '../backbone/simulation.js'
 import { runOpenClawBrain } from '../brain/openclaw.js'
 import { pullToast } from '../ingest/toast.js'
+import { suggestToastRecipeMappings } from '../ingest/recipes.js'
 import { withBackendDb } from './backend.js'
 import type { CommandContext } from './types.js'
 
@@ -907,8 +908,34 @@ export const backboneIntake = async (args: string[], context: CommandContext): P
     context.terminal.section('Missing recipe backlog')
     context.terminal.table(buildMissingRecipeRows(db, limit))
 
+    context.terminal.section('Suggested recipe mappings')
+    context.terminal.table(buildRecipeSuggestionRows(db, limit))
+
     context.terminal.section('Recent mapped Toast consumption')
     context.terminal.table(buildMappedToastRows(db, limit))
+  })
+}
+
+export const backboneRecipeSuggestions = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const limit = options.limit ?? 12
+  context.terminal.title('Backbone recipe suggestions')
+
+  await withBackboneTargetDb(context, options, (db, target) => {
+    const rows = buildRecipeSuggestionRows(db, limit)
+    context.terminal.dump({
+      target,
+      suggestions: rows.length,
+      note: 'Review before applying; suggestions do not mutate inventory.',
+    })
+
+    if (rows.length === 0) {
+      context.terminal.success('No conservative Toast recipe suggestions found.')
+      context.terminal.subtitle('Run `bbk backbone intake` to inspect unmapped Toast items and recipe coverage.')
+      return
+    }
+
+    context.terminal.table(rows)
   })
 }
 
@@ -1749,6 +1776,19 @@ const buildMissingRecipeRows = (db: Db, limit: number): Array<Record<string, unk
     }))
 }
 
+const buildRecipeSuggestionRows = (db: Db, limit: number): Array<Record<string, unknown>> =>
+  suggestToastRecipeMappings(db, limit).map((suggestion) => ({
+    menuItem: suggestion.menuItemName,
+    suggestedSku: suggestion.suggestedSkuName,
+    qty: suggestion.suggestedQuantity,
+    unit: suggestion.suggestedUnit,
+    confidence: suggestion.confidence,
+    occurrences: suggestion.occurrences,
+    sales: suggestion.sales,
+    reason: suggestion.reason,
+    command: suggestion.command,
+  }))
+
 const buildMappedToastRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
   const rows = db
     .prepare(
@@ -1813,14 +1853,16 @@ const buildBackboneGapRows = (
   input: { limit: number; maxCountAgeDays: number },
 ): Array<Record<string, unknown>> => {
   const rows: Array<Record<string, unknown>> = []
+  const recipeSuggestions = suggestToastRecipeMappings(db, input.limit)
 
   for (const row of buildMissingRecipeRows(db, input.limit)) {
+    const suggestion = recipeSuggestions.find((candidate) => candidate.menuItemName === row.menuItem)
     rows.push({
       priority: 'critical',
       gap: 'map Toast recipe',
       target: row.menuItem,
       detail: `${row.occurrences} unresolved sale${row.occurrences === 1 ? '' : 's'}; ${row.sales} Toast unit${row.sales === 1 ? '' : 's'}`,
-      action: `toast map-recipe "${row.menuItem}" <sku> <qty> <unit>`,
+      action: suggestion?.command ?? `toast map-recipe "${row.menuItem}" <sku> <qty> <unit>`,
     })
   }
 
