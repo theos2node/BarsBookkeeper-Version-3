@@ -216,8 +216,10 @@ process.exit(1)
     expect(backboneVerifyHistory).toContain('1/1')
     expect(backboneMatrix).toContain('Backbone scenario matrix passed 6/6 scenarios')
     expect(backboneStatus).toContain('Listener health')
+    expect(backboneStatus).toContain('Listener runtime lock')
     expect(backboneAudit).toContain('Backbone audit passed')
     expect(backboneAudit).toContain('listener heartbeat')
+    expect(backboneAudit).toContain('listener runtime lock')
     expect(backboneAudit).toContain('prediction freshness')
     expect(backboneAudit).toContain('count grounding')
     expect(backboneAudit).toContain('toast recipe coverage')
@@ -366,6 +368,11 @@ process.exit(1)
       )
       .run(expiresAt)
     activeDb.close()
+
+    const status = await expectCliOk(['backbone', 'status'], dataDir)
+    expect(status).toContain('Listener runtime lock')
+    expect(status).toContain('active-owner')
+    expect(status).toContain('active')
 
     const blocked = await runCli(
       ['backbone', 'listen', '--cycles', '1', '--interval-ms', '0', '--skip-toast', '--skip-openclaw'],

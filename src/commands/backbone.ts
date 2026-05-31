@@ -80,6 +80,17 @@ type AccuracySummary = {
   latestFeedback: string
 }
 
+type RuntimeLockState = {
+  present: boolean
+  name: string
+  owner: string
+  acquiredAt: string
+  heartbeatAt: string
+  expiresAt: string
+  state: 'active' | 'stale' | 'absent'
+  ageMinutes: number
+}
+
 type ToastIntakeSummary = {
   target: string
   toastDocuments: number
@@ -195,10 +206,12 @@ export const backboneStatus = async (_args: string[], context: CommandContext): 
     if (!result) {
       context.terminal.warn('No Backbone runs yet.')
       context.terminal.subtitle('Run `bbk backbone run` or `bbk backbone simulate`.')
+      renderListenerRuntimeLock(db, context)
       return
     }
     renderRun(result, context)
     renderListenerHealth(db, context)
+    renderListenerRuntimeLock(db, context)
   })
 }
 
@@ -1036,6 +1049,48 @@ const buildUngroundedRiskRows = (db: Db, limit: number): Array<Record<string, un
   }))
 }
 
+const readRuntimeLock = (db: any, name = 'backbone-listener'): RuntimeLockState => {
+  const row = db.prepare('SELECT * FROM backbone_runtime_locks WHERE name = ?').get(name)
+  if (!row) {
+    return {
+      present: false,
+      name,
+      owner: '',
+      acquiredAt: '',
+      heartbeatAt: '',
+      expiresAt: '',
+      state: 'absent',
+      ageMinutes: Number.POSITIVE_INFINITY,
+    }
+  }
+  const expiresAt = String(row.expires_at)
+  const heartbeatAt = String(row.heartbeat_at)
+  return {
+    present: true,
+    name,
+    owner: String(row.owner),
+    acquiredAt: String(row.acquired_at),
+    heartbeatAt,
+    expiresAt,
+    state: new Date(expiresAt).getTime() > Date.now() ? 'active' : 'stale',
+    ageMinutes: ageMinutes(heartbeatAt),
+  }
+}
+
+const renderListenerRuntimeLock = (db: any, context: CommandContext): void => {
+  const lock = readRuntimeLock(db)
+  context.terminal.section('Listener runtime lock')
+  context.terminal.table([
+    {
+      state: lock.state,
+      owner: lock.owner,
+      heartbeatAgeMinutes: Number.isFinite(lock.ageMinutes) ? Number(lock.ageMinutes.toFixed(1)) : '',
+      heartbeatAt: lock.heartbeatAt,
+      expiresAt: lock.expiresAt,
+    },
+  ])
+}
+
 const environmentLatestRun = (dbPath: string): string => {
   if (!existsSync(dbPath)) return ''
   const db = openDatabase(dbPath)
@@ -1669,6 +1724,7 @@ const buildBackboneAudit = (
        LIMIT 1`,
     )
     .get()
+  const listenerLock = readRuntimeLock(db)
   const cursor = db.prepare('SELECT last_start, last_end, last_source, updated_at FROM backbone_toast_cursor WHERE id = 1').get()
   const countGrounding = db
     .prepare(
@@ -1788,6 +1844,16 @@ const buildBackboneAudit = (
       detail: latestCycle.toast_ok ? latestCycle.toast_summary : latestCycle.toast_error ?? latestCycle.toast_summary,
     })
   }
+
+  checks.push({
+    check: 'listener runtime lock',
+    status: listenerLock.state === 'active' ? 'pass' : 'warn',
+    detail: listenerLock.state === 'active'
+      ? `active owner ${listenerLock.owner}; heartbeat ${Number(listenerLock.ageMinutes.toFixed(1))}m old; expires ${listenerLock.expiresAt}`
+      : listenerLock.state === 'stale'
+        ? `stale owner ${listenerLock.owner}; expired ${listenerLock.expiresAt}; next listener will take over`
+        : 'no active listener lock; launchd listener may not be running',
+  })
 
   checks.push({
     check: 'recent failures',
