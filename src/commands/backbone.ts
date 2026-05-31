@@ -208,6 +208,7 @@ type MaintenanceVerificationSummary = {
   worstRollingBottleMae: number
   minRollingLowStockRecall: number
   minRollingUncertaintyCoverage: number
+  minRollingFeedbackBandCoverage: number
 }
 
 type HorizonRun = {
@@ -1313,9 +1314,10 @@ const latestVerificationTrustRow = (db: Db): { status: string; detail: string } 
   const summary = parseJson<{
     worstRollingBottleMae?: number
     minRollingUncertaintyCoverage?: number
+    minRollingFeedbackBandCoverage?: number
     maxRollingMeanBandBottles?: number
   }>(row.summary_json, {})
-  const detail = `${row.passed_scenarios}/${row.scenario_count} scenarios at ${row.completed_at}; rollingMae ${summary.worstRollingBottleMae ?? ''}; bandCoverage ${summary.minRollingUncertaintyCoverage ?? ''}; bandBottles ${summary.maxRollingMeanBandBottles ?? ''}`
+  const detail = `${row.passed_scenarios}/${row.scenario_count} scenarios at ${row.completed_at}; rollingMae ${summary.worstRollingBottleMae ?? ''}; uncertaintyCoverage ${summary.minRollingUncertaintyCoverage ?? ''}; feedbackBandCoverage ${summary.minRollingFeedbackBandCoverage ?? ''}; bandBottles ${summary.maxRollingMeanBandBottles ?? ''}`
   return { status: String(row.status), detail }
 }
 
@@ -2887,6 +2889,7 @@ const runMaintenanceVerificationGate = async (
     worstRollingBottleMae: round(Math.max(0, ...results.map(({ rolling }) => rolling.result.bottleMae)), 3),
     minRollingLowStockRecall: round(Math.min(...results.map(({ rolling }) => rolling.result.lowStockRecall)), 3),
     minRollingUncertaintyCoverage: round(Math.min(...results.map(({ rolling }) => rolling.result.uncertaintyCoverage)), 3),
+    minRollingFeedbackBandCoverage: minFeedbackBandCoverage(results, input.options, 'rolling'),
   }
 }
 
@@ -3089,6 +3092,8 @@ export const backboneAcceptance = async (args: string[], context: CommandContext
       samples: row.feedbackSamples,
       bottleMae: row.bottleMae,
       biasBottles: row.biasBottles,
+      bandCoverage: row.feedbackBandCoverage,
+      outOfBand: row.outOfBandSamples,
       ageDays: row.feedbackAgeDays ?? '',
       trendDelta: row.trendDelta,
       reason: row.statusReason,
@@ -3157,6 +3162,8 @@ export const backboneVerifyHistory = async (args: string[], context: CommandCont
           worstRollingBottleMae?: number
           maxRollingBottleError?: number
           minRollingLowStockRecall?: number
+          minRollingUncertaintyCoverage?: number
+          minRollingFeedbackBandCoverage?: number
         }>(row.summary_json, {})
         return {
           id: row.id,
@@ -3168,6 +3175,8 @@ export const backboneVerifyHistory = async (args: string[], context: CommandCont
           rollingMae: summary.worstRollingBottleMae ?? '',
           maxBottleError: summary.maxRollingBottleError ?? '',
           lowStockRecall: summary.minRollingLowStockRecall ?? '',
+          uncertaintyCoverage: summary.minRollingUncertaintyCoverage ?? '',
+          feedbackBandCoverage: summary.minRollingFeedbackBandCoverage ?? '',
         }
       }),
     )
@@ -3277,6 +3286,30 @@ const readLearningDriftSummary = (
   }
 }
 
+const verificationDriftThresholds = (options: ParsedOptions): LearningDriftSummary['thresholds'] => ({
+  minSamples: options.minSamples ?? 3,
+  maxBottleMae: options.maxBottleMae ?? 0.25,
+  maxBiasBottles: options.maxBiasBottles ?? 0.2,
+  maxFeedbackAgeDays: options.maxFeedbackAgeDays ?? options.maxCountAgeDays ?? 45,
+})
+
+const minFeedbackBandCoverage = (
+  results: VerificationScenarioResult[],
+  options: ParsedOptions,
+  gate: 'validation' | 'rolling',
+): number => {
+  const thresholds = verificationDriftThresholds(options)
+  return round(
+    Math.min(
+      ...results.map((result) => {
+        const target = gate === 'validation' ? result.validation : result.rolling
+        return readLearningDriftSummary(target.envDbPath, target.envName, thresholds).feedbackBandCoverage
+      }),
+    ),
+    3,
+  )
+}
+
 const persistVerificationResult = async (
   context: CommandContext,
   input: {
@@ -3288,9 +3321,14 @@ const persistVerificationResult = async (
   },
 ): Promise<void> => {
   const failedScenarios = input.results.filter(({ validation, rolling }) => !validation.result.passed || !rolling.result.passed)
-  const summary = {
-    scenarios: input.results.map(({ scenario, validation, rolling }) => ({
+  const driftThresholds = verificationDriftThresholds(input.options)
+  const scenarioSummaries = input.results.map(({ scenario, validation, rolling }) => {
+    const validationDrift = readLearningDriftSummary(validation.envDbPath, validation.envName, driftThresholds)
+    const rollingDrift = readLearningDriftSummary(rolling.envDbPath, rolling.envName, driftThresholds)
+    return {
       scenario,
+      validationDrift,
+      rollingDrift,
       validation: {
         env: validation.envName,
         passed: validation.result.passed,
@@ -3299,6 +3337,8 @@ const persistVerificationResult = async (
         lowStockRecall: validation.result.lowStockRecall,
         lowStockPrecision: validation.result.lowStockPrecision,
         uncertaintyCoverage: validation.result.uncertaintyCoverage,
+        feedbackBandCoverage: validationDrift.feedbackBandCoverage,
+        outOfBandFeedback: validationDrift.outOfBandSamples,
         meanBandBottles: validation.result.meanBandBottles,
         costCuttingOptions: validation.result.costCuttingOptions,
         feedbackItems: validation.result.feedbackItems,
@@ -3315,18 +3355,25 @@ const persistVerificationResult = async (
         lowStockRecall: rolling.result.lowStockRecall,
         lowStockPrecision: rolling.result.lowStockPrecision,
         uncertaintyCoverage: rolling.result.uncertaintyCoverage,
+        feedbackBandCoverage: rollingDrift.feedbackBandCoverage,
+        outOfBandFeedback: rollingDrift.outOfBandSamples,
         meanBandBottles: rolling.result.meanBandBottles,
         costCuttingOptions: rolling.result.costCuttingOptions,
         shrinkSignals: rolling.result.shrinkSignals,
         feedbackItems: rolling.result.feedbackItems,
         calibratedSkus: rolling.result.calibratedSkus,
       },
-    })),
+    }
+  })
+  const summary = {
+    scenarios: scenarioSummaries.map(({ scenario, validation, rolling }) => ({ scenario, validation, rolling })),
     worstValidationBottleMae: round(Math.max(0, ...input.results.map(({ validation }) => validation.result.bottleMae)), 3),
     worstRollingBottleMae: round(Math.max(0, ...input.results.map(({ rolling }) => rolling.result.bottleMae)), 3),
     maxRollingBottleError: round(Math.max(0, ...input.results.map(({ rolling }) => rolling.result.maxBottleError)), 3),
     minRollingLowStockRecall: round(Math.min(...input.results.map(({ rolling }) => rolling.result.lowStockRecall)), 3),
     minRollingUncertaintyCoverage: round(Math.min(...input.results.map(({ rolling }) => rolling.result.uncertaintyCoverage)), 3),
+    minValidationFeedbackBandCoverage: round(Math.min(...scenarioSummaries.map(({ validationDrift }) => validationDrift.feedbackBandCoverage)), 3),
+    minRollingFeedbackBandCoverage: round(Math.min(...scenarioSummaries.map(({ rollingDrift }) => rollingDrift.feedbackBandCoverage)), 3),
     maxRollingMeanBandBottles: round(Math.max(0, ...input.results.map(({ rolling }) => rolling.result.meanBandBottles)), 3),
   }
 

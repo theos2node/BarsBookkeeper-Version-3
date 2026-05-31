@@ -278,6 +278,7 @@ process.exit(1)
     expect(backboneVerifyHistory).toContain('Backbone verification history')
     expect(backboneVerifyHistory).toContain('passed')
     expect(backboneVerifyHistory).toContain('1/1')
+    expect(backboneVerifyHistory).toContain('feedbackBandCoverage')
     expect(backboneMatrix).toContain('Backbone scenario matrix passed 7/7 scenarios')
     expect(backboneStatus).toContain('Listener health')
     expect(backboneStatus).toContain('Listener runtime lock')
@@ -418,10 +419,11 @@ process.exit(1)
           .prepare("SELECT summary_json AS value FROM backbone_maintenance_runs WHERE snapshot_label = 'smoke-maintenance'")
           .get()?.value,
       ),
-    ) as { nextActions?: Array<{ action?: string }>; verification?: { status?: string; passed?: number } }
+    ) as { nextActions?: Array<{ action?: string }>; verification?: { status?: string; passed?: number; minRollingFeedbackBandCoverage?: number } }
     expect(maintenanceSummary.nextActions?.some((row) => String(row.action ?? '').startsWith('bbk '))).toBe(true)
     expect(maintenanceSummary.verification?.status).toBe('passed')
     expect(maintenanceSummary.verification?.passed).toBe(1)
+    expect(maintenanceSummary.verification?.minRollingFeedbackBandCoverage).toBeGreaterThanOrEqual(0.95)
 
     await expectCliOk(['setup'], dataDir)
     await expectCliOk(['seed-demo'], dataDir)
@@ -603,6 +605,15 @@ process.exit(1)
 
     db = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_verifications WHERE status = 'passed'")).toBe(1)
+    const verificationSummary = JSON.parse(
+      String(db.prepare("SELECT summary_json AS value FROM backbone_verifications WHERE status = 'passed'").get()?.value),
+    ) as {
+      minRollingFeedbackBandCoverage?: number
+      scenarios?: Array<{ validation?: { feedbackBandCoverage?: number }; rolling?: { feedbackBandCoverage?: number } }>
+    }
+    expect(verificationSummary.minRollingFeedbackBandCoverage).toBeGreaterThanOrEqual(0.95)
+    expect(verificationSummary.scenarios?.[0]?.validation?.feedbackBandCoverage).toBeGreaterThanOrEqual(0.8)
+    expect(verificationSummary.scenarios?.[0]?.rolling?.feedbackBandCoverage).toBeGreaterThanOrEqual(0.95)
     expect(
       scalar(db, "SELECT COUNT(*) AS value FROM backbone_environments WHERE name LIKE 'accept-smoke-%-restore'"),
     ).toBe(1)
