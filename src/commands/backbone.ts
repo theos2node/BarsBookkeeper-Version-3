@@ -30,6 +30,7 @@ type ParsedOptions = {
   simulateOpenClawFailure?: boolean
   scenario?: BackboneSimulationScenario
   maxAgeMinutes?: number
+  maxRunAgeMinutes?: number
   cursorLookbackMinutes?: number
   minSamples?: number
 }
@@ -201,10 +202,11 @@ export const backboneAccuracy = async (args: string[], context: CommandContext):
 export const backboneAudit = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const maxAgeMinutes = options.maxAgeMinutes ?? 60
+  const maxRunAgeMinutes = options.maxRunAgeMinutes ?? maxAgeMinutes
   context.terminal.title('Backbone audit')
 
   await withBackendDb(context.config, async (db: any) => {
-    const checks = buildBackboneAudit(db, maxAgeMinutes)
+    const checks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes })
     context.terminal.table(checks)
 
     const failures = checks.filter((check) => check.status === 'fail')
@@ -520,10 +522,13 @@ export const backboneMatrix = async (args: string[], context: CommandContext): P
   context.terminal.success(`Backbone scenario matrix passed ${results.length}/${results.length} scenarios.`)
 }
 
-const buildBackboneAudit = (db: any, maxAgeMinutes: number): AuditCheck[] => {
+const buildBackboneAudit = (
+  db: any,
+  options: { maxAgeMinutes: number; maxRunAgeMinutes: number },
+): AuditCheck[] => {
   const latestRun = db
     .prepare(
-      `SELECT id, as_of, metrics_json
+      `SELECT id, as_of, completed_at, metrics_json
        FROM backbone_runs
        WHERE status = 'completed'
        ORDER BY id DESC
@@ -580,6 +585,20 @@ const buildBackboneAudit = (db: any, maxAgeMinutes: number): AuditCheck[] => {
     status: latestRun ? 'pass' : 'fail',
     detail: latestRun ? `run ${toNumber(latestRun.id)} at ${latestRun.as_of}` : 'no completed Backbone run',
   })
+  if (latestRun) {
+    const runFreshnessAge = ageMinutes(latestRun.completed_at ?? latestRun.as_of)
+    checks.push({
+      check: 'prediction freshness',
+      status: runFreshnessAge <= options.maxRunAgeMinutes ? 'pass' : 'fail',
+      detail: `run ${toNumber(latestRun.id)} ${Number(runFreshnessAge.toFixed(1))}m old; max ${options.maxRunAgeMinutes}m`,
+    })
+  } else {
+    checks.push({
+      check: 'prediction freshness',
+      status: 'fail',
+      detail: 'no completed Backbone run to age',
+    })
+  }
   checks.push({
     check: 'prediction coverage',
     status: predictionCount > 0 ? 'pass' : 'fail',
@@ -588,17 +607,25 @@ const buildBackboneAudit = (db: any, maxAgeMinutes: number): AuditCheck[] => {
 
   if (!latestCycle) {
     checks.push({ check: 'listener heartbeat', status: 'fail', detail: 'no listener cycle journaled' })
+    checks.push({ check: 'listener prediction link', status: 'fail', detail: 'no listener cycle has produced Backbone output' })
   } else {
-    const ageMinutes = Math.max(0, (Date.now() - new Date(latestCycle.started_at).getTime()) / 60_000)
+    const listenerAgeMinutes = ageMinutes(latestCycle.started_at)
     checks.push({
       check: 'listener heartbeat',
-      status: ageMinutes <= maxAgeMinutes ? 'pass' : 'fail',
-      detail: `cycle ${latestCycle.id} ${Number(ageMinutes.toFixed(1))}m old`,
+      status: listenerAgeMinutes <= options.maxAgeMinutes ? 'pass' : 'fail',
+      detail: `cycle ${latestCycle.id} ${Number(listenerAgeMinutes.toFixed(1))}m old; max ${options.maxAgeMinutes}m`,
     })
     checks.push({
       check: 'listener status',
       status: latestCycle.status === 'completed' ? 'pass' : 'fail',
       detail: `${latestCycle.status}${latestCycle.error_message ? `: ${latestCycle.error_message}` : ''}`,
+    })
+    checks.push({
+      check: 'listener prediction link',
+      status: latestCycle.backbone_run_id && latestCycle.prediction_count > 0 ? 'pass' : 'fail',
+      detail: latestCycle.backbone_run_id
+        ? `cycle ${latestCycle.id} -> run ${latestCycle.backbone_run_id}, ${latestCycle.prediction_count} prediction${latestCycle.prediction_count === 1 ? '' : 's'}`
+        : `cycle ${latestCycle.id} has no Backbone run`,
     })
     checks.push({
       check: 'toast intake',
@@ -634,6 +661,12 @@ const buildBackboneAudit = (db: any, maxAgeMinutes: number): AuditCheck[] => {
   })
 
   return checks
+}
+
+const ageMinutes = (timestamp: unknown): number => {
+  const value = timestamp ? new Date(String(timestamp)).getTime() : Number.NaN
+  if (!Number.isFinite(value)) return Number.POSITIVE_INFINITY
+  return Math.max(0, (Date.now() - value) / 60_000)
 }
 
 const tryPullToast = async (
@@ -930,6 +963,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--max-age-minutes' && next) {
       parsed.maxAgeMinutes = nonNegativeNumber(next, '--max-age-minutes')
+      index += 1
+    } else if (arg === '--max-run-age-minutes' && next) {
+      parsed.maxRunAgeMinutes = nonNegativeNumber(next, '--max-run-age-minutes')
       index += 1
     } else if (arg === '--cursor-lookback-minutes' && next) {
       parsed.cursorLookbackMinutes = positiveNumber(next, '--cursor-lookback-minutes')
