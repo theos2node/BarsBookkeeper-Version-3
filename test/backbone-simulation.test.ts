@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
 import { getLatestBackboneRun, runBackboneModel } from '../src/backbone/index.js'
-import { backboneSimulationScenarios, runBackboneAccuracySimulation } from '../src/backbone/simulation.js'
+import { backboneSimulationScenarios, runBackboneAccuracySimulation, runBackboneRollingBacktest } from '../src/backbone/simulation.js'
 
 describe('Backbone prediction model', () => {
   let db: Db
@@ -73,6 +73,21 @@ describe('Backbone prediction model', () => {
     expect(result.feedbackItems).toBeGreaterThanOrEqual(3)
     expect(result.calibratedSkus).toBeGreaterThanOrEqual(3)
     expect(result.predictions.some((prediction) => prediction.costSignal.includes('audit shrink'))).toBe(true)
+  })
+
+  it('passes a rolling backtest between sparse monthly count snapshots', () => {
+    const result = runBackboneRollingBacktest(db, { days: 60, countCadenceDays: 30, scenario: 'shrink' })
+
+    expect(result.passed).toBe(true)
+    expect(result.runCount).toBeGreaterThanOrEqual(30)
+    expect(result.countSnapshots).toBe(2)
+    expect(result.feedbackItems).toBeGreaterThanOrEqual(3)
+    expect(result.calibratedSkus).toBeGreaterThanOrEqual(3)
+    expect(result.bottleMae).toBeLessThanOrEqual(0.2)
+    expect(result.maxBottleError).toBeLessThanOrEqual(0.5)
+    expect(result.lowStockRecall).toBeGreaterThanOrEqual(0.9)
+    expect(result.lowStockPrecision).toBeGreaterThanOrEqual(0.7)
+    expect(result.shrinkSignals).toBeGreaterThan(0)
   })
 
   it('finds cost-cutting options learned from sparse vendor invoice drift', () => {

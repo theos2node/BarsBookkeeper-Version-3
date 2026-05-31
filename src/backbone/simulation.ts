@@ -10,6 +10,15 @@ export type BackboneSimulationOptions = {
   scenario?: BackboneSimulationScenario
 }
 
+export type BackboneRollingBacktestOptions = {
+  startAt?: string
+  days?: number
+  scenario?: BackboneSimulationScenario
+  horizonDays?: number
+  countCadenceDays?: number
+  warmupDays?: number
+}
+
 export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow' | 'shrink' | 'volatile' | 'price-drift'
 
 export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow', 'shrink', 'volatile', 'price-drift']
@@ -33,6 +42,37 @@ export type BackboneSimulationResult = {
     actualOnHand: number
     bottleError: number
     risk: string
+    costSignal: string
+  }>
+}
+
+export type BackboneRollingBacktestResult = {
+  scenario: BackboneSimulationScenario
+  days: number
+  horizonDays: number
+  warmupDays: number
+  countCadenceDays: number
+  runCount: number
+  evaluatedPredictions: number
+  countSnapshots: number
+  feedbackItems: number
+  calibratedSkus: number
+  bottleMae: number
+  maxBottleError: number
+  lowStockRecall: number
+  lowStockPrecision: number
+  costCuttingOptions: number
+  shrinkSignals: number
+  passed: boolean
+  rows: Array<{
+    asOf: string
+    targetAsOf: string
+    sku: string
+    predictedOnHand: number
+    actualOnHand: number
+    bottleError: number
+    risk: string
+    actualLow: boolean
     costSignal: string
   }>
 }
@@ -65,6 +105,12 @@ const recipe = {
   vodkaSodaVodka: 50,
   margaritaTequila: 60,
   margaritaTripleSec: 20,
+}
+
+const parLevels = {
+  vodka: 5000,
+  tequila: 5000,
+  tripleSec: 2500,
 }
 
 const profiles: Record<BackboneSimulationScenario, ScenarioProfile> = {
@@ -158,6 +204,20 @@ const cumulativeConsumption = (
   return consumed
 }
 
+const actualOnHand = (
+  start: Date,
+  day: number,
+  profile: ScenarioProfile,
+  sku: 'vodka' | 'tequila' | 'tripleSec',
+): number => profile.initial[sku] + latePurchase(profile, sku, day) - cumulativeConsumption(start, day, profile, sku) - hiddenShrink(profile, sku, day)
+
+const skuKey = (skuName: string): 'vodka' | 'tequila' | 'tripleSec' | null => {
+  if (skuName.includes('Vodka')) return 'vodka'
+  if (skuName.includes('Tequila')) return 'tequila'
+  if (skuName.includes('Triple Sec')) return 'tripleSec'
+  return null
+}
+
 export const runBackboneAccuracySimulation = (
   db: Db,
   options: BackboneSimulationOptions = {},
@@ -238,6 +298,109 @@ export const runBackboneAccuracySimulation = (
   }
 }
 
+export const runBackboneRollingBacktest = (
+  db: Db,
+  options: BackboneRollingBacktestOptions = {},
+): BackboneRollingBacktestResult => {
+  const start = new Date(options.startAt ?? '2026-05-01T08:00:00.000Z')
+  const days = options.days ?? 60
+  const horizonDays = options.horizonDays ?? 1
+  const countCadenceDays = options.countCadenceDays ?? 30
+  const warmupDays = options.warmupDays ?? Math.min(countCadenceDays, Math.max(1, days - horizonDays))
+  const profile = profiles[options.scenario ?? 'steady']
+  const rows: BackboneRollingBacktestResult['rows'] = []
+  let countSnapshots = 0
+
+  seedBackboneReference(db, profile)
+  ingestInvoices(db, simulationInvoices(start, profile), 'Backbone rolling backtest invoices')
+
+  for (let day = 1; day <= days; day += 1) {
+    if (profile.lateCheapVodkaInvoice?.day === day) {
+      ingestInvoices(db, simulationLateInvoices(start, profile), 'Backbone rolling sparse vendor invoices')
+    }
+    ingestToastSales(db, simulationSales(start, day, profile), 'Backbone rolling Toast history')
+
+    const isCountDay = day % countCadenceDays === 0 || day === days
+    if (isCountDay) {
+      ingestCounts(db, countSnapshot(start, day, profile, day === days ? 'end' : 'mid'), 'Backbone rolling sparse hand counts')
+      countSnapshots += 1
+    }
+
+    if (day < warmupDays || day + horizonDays > days) continue
+
+    const asOf = isoDay(start, day, 23)
+    const run = runBackboneModel(db, {
+      asOf,
+      horizonDays,
+      usageWindowDays: Math.min(28, day),
+      mode: 'evaluation',
+    })
+    const targetDay = day + horizonDays
+    const targetAsOfValue = isoDay(start, targetDay, 23)
+
+    for (const prediction of run.predictions.filter((row) => row.skuName.startsWith('Backbone '))) {
+      const key = skuKey(prediction.skuName)
+      if (!key) continue
+      const actual = actualOnHand(start, targetDay, profile, key)
+      rows.push({
+        asOf,
+        targetAsOf: targetAsOfValue,
+        sku: prediction.skuName,
+        predictedOnHand: round(prediction.predictedOnHand, 2),
+        actualOnHand: round(actual, 2),
+        bottleError: round(Math.abs(prediction.predictedOnHand - actual) / bottleSize(db, prediction.skuId), 3),
+        risk: prediction.lowStockRisk,
+        actualLow: actual < parLevels[key],
+        costSignal: prediction.costSignal,
+      })
+    }
+  }
+
+  const feedbackItems = scoreBackboneFeedback(db, { asOf: isoDay(start, days, 23) })
+  const calibratedSkus = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
+  const bottleMae = round(rows.reduce((total, row) => total + row.bottleError, 0) / Math.max(1, rows.length), 3)
+  const maxBottleError = round(Math.max(0, ...rows.map((row) => row.bottleError)), 3)
+  const truePositives = rows.filter((row) => row.risk !== 'ok' && row.actualLow).length
+  const predictedLow = rows.filter((row) => row.risk !== 'ok').length
+  const actualLow = rows.filter((row) => row.actualLow).length
+  const lowStockRecall = round(actualLow === 0 ? 1 : truePositives / actualLow, 3)
+  const lowStockPrecision = round(predictedLow === 0 ? 1 : truePositives / predictedLow, 3)
+  const costCuttingOptions = rows.filter((row) => row.costSignal !== 'none').length
+  const shrinkSignals = rows.filter((row) => row.costSignal.includes('audit shrink')).length
+  const shrinkDetected = profile.name !== 'shrink' || shrinkSignals > 0
+  const passed =
+    rows.length > 0 &&
+    bottleMae <= 0.2 &&
+    maxBottleError <= 0.5 &&
+    lowStockRecall >= 0.9 &&
+    lowStockPrecision >= 0.7 &&
+    costCuttingOptions > 0 &&
+    feedbackItems >= 3 &&
+    calibratedSkus >= 3 &&
+    shrinkDetected
+
+  return {
+    scenario: profile.name,
+    days,
+    horizonDays,
+    warmupDays,
+    countCadenceDays,
+    runCount: toNumber(db.prepare("SELECT COUNT(*) AS count FROM backbone_runs WHERE mode = 'evaluation'").get()?.count),
+    evaluatedPredictions: rows.length,
+    countSnapshots,
+    feedbackItems,
+    calibratedSkus,
+    bottleMae,
+    maxBottleError,
+    lowStockRecall,
+    lowStockPrecision,
+    costCuttingOptions,
+    shrinkSignals,
+    passed,
+    rows,
+  }
+}
+
 const seedBackboneReference = (db: Db, profile: ScenarioProfile): void => {
   const premium = ensureVendor(db, 'Premium Bottle House')
   const value = ensureVendor(db, 'Value Spirits Co')
@@ -292,9 +455,9 @@ const simulationSales = (start: Date, day: number, profile: ScenarioProfile): To
 }
 
 const countSnapshot = (start: Date, day: number, profile: ScenarioProfile, label: 'mid' | 'end'): CountRow[] => [
-  { countId: `BB-SIM-${profile.name}-${label}-VODKA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: profile.initial.vodka + latePurchase(profile, 'vodka', day) - cumulativeConsumption(start, day, profile, 'vodka') - hiddenShrink(profile, 'vodka', day), unit: 'ml' },
-  { countId: `BB-SIM-${profile.name}-${label}-TEQUILA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: profile.initial.tequila - cumulativeConsumption(start, day, profile, 'tequila') - hiddenShrink(profile, 'tequila', day), unit: 'ml' },
-  { countId: `BB-SIM-${profile.name}-${label}-TRIPLE`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: profile.initial.tripleSec - cumulativeConsumption(start, day, profile, 'tripleSec') - hiddenShrink(profile, 'tripleSec', day), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-VODKA-${day}`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: actualOnHand(start, day, profile, 'vodka'), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-TEQUILA-${day}`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: actualOnHand(start, day, profile, 'tequila'), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-TRIPLE-${day}`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: actualOnHand(start, day, profile, 'tripleSec'), unit: 'ml' },
 ]
 
 const hiddenShrink = (profile: ScenarioProfile, sku: keyof NonNullable<ScenarioProfile['hiddenShrinkDaily']>, day: number): number =>

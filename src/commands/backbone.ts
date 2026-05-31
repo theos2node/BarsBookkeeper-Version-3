@@ -7,6 +7,7 @@ import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel } fro
 import {
   backboneSimulationScenarios,
   runBackboneAccuracySimulation,
+  runBackboneRollingBacktest,
   type BackboneSimulationScenario,
 } from '../backbone/simulation.js'
 import { runOpenClawBrain } from '../brain/openclaw.js'
@@ -21,6 +22,7 @@ type ParsedOptions = {
   horizons?: number[]
   usageWindowDays?: number
   trainingDays?: number
+  days?: number
   cycles?: number
   intervalMs?: number
   toastFile?: string
@@ -41,6 +43,8 @@ type ParsedOptions = {
   keep?: number
   force?: boolean
   limit?: number
+  countCadenceDays?: number
+  warmupDays?: number
 }
 
 type AuditCheck = {
@@ -900,6 +904,78 @@ export const backboneSimulate = async (args: string[], context: CommandContext):
   }
 }
 
+export const backboneBacktest = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const envName = options.env ?? `backtest-${options.scenario ?? 'steady'}-${new Date().toISOString().replace(/[:.]/g, '-')}`
+  const envDir = resolve(context.config.dataDir, 'environments', envName)
+  const envDbPath = resolve(envDir, 'barsbookkeeper.sqlite')
+
+  context.terminal.title('Backbone rolling backtest')
+  await mkdir(envDir, { recursive: true })
+
+  await withBackendDb(context.config, async (controlDb: any) => {
+    ensureBackboneEnvironment(controlDb, {
+      name: envName,
+      dbPath: envDbPath,
+      description: 'Isolated Backbone rolling backtest sandbox',
+    })
+  })
+
+  const db = openDatabase(envDbPath)
+  try {
+    migrateDatabase(db)
+    const result = runBackboneRollingBacktest(db, {
+      startAt: options.asOf,
+      days: options.days,
+      horizonDays: options.horizonDays,
+      countCadenceDays: options.countCadenceDays,
+      warmupDays: options.warmupDays,
+      scenario: options.scenario,
+    })
+    context.terminal.status(result.passed ? 'ok' : 'fail', `Rolling backtest ${envName} ${result.passed ? 'passed' : 'failed'}`)
+    context.terminal.subtitle(`sandbox db: ${envDbPath}`)
+    context.terminal.dump({
+      scenario: result.scenario,
+      days: result.days,
+      horizonDays: result.horizonDays,
+      warmupDays: result.warmupDays,
+      countCadenceDays: result.countCadenceDays,
+      runCount: result.runCount,
+      evaluatedPredictions: result.evaluatedPredictions,
+      countSnapshots: result.countSnapshots,
+      feedbackItems: result.feedbackItems,
+      calibratedSkus: result.calibratedSkus,
+      bottleMae: result.bottleMae,
+      maxBottleError: result.maxBottleError,
+      lowStockRecall: result.lowStockRecall,
+      lowStockPrecision: result.lowStockPrecision,
+      costCuttingOptions: result.costCuttingOptions,
+      shrinkSignals: result.shrinkSignals,
+    })
+    context.terminal.section('Worst prediction errors')
+    context.terminal.table(
+      [...result.rows]
+        .sort((left, right) => right.bottleError - left.bottleError)
+        .slice(0, options.limit ?? 12)
+        .map((row) => ({
+          target: row.targetAsOf,
+          sku: row.sku,
+          predicted: row.predictedOnHand,
+          actual: row.actualOnHand,
+          bottleError: row.bottleError,
+          risk: row.risk,
+          actualLow: row.actualLow,
+          cost: row.costSignal,
+        })),
+    )
+    if (!result.passed) {
+      throw new Error('backbone_backtest_failed')
+    }
+  } finally {
+    db.close()
+  }
+}
+
 export const backboneMatrix = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
@@ -1413,7 +1489,8 @@ const parseOptions = (args: string[]): ParsedOptions => {
       parsed.trainingDays = positiveNumber(next, '--training-days')
       index += 1
     } else if (arg === '--days' && next) {
-      parsed.trainingDays = positiveNumber(next, '--days') - 1
+      parsed.days = positiveNumber(next, '--days')
+      parsed.trainingDays = parsed.days - 1
       index += 1
     } else if (arg === '--cycles' && next) {
       parsed.cycles = positiveNumber(next, '--cycles')
@@ -1472,6 +1549,12 @@ const parseOptions = (args: string[]): ParsedOptions => {
       parsed.force = true
     } else if (arg === '--limit' && next) {
       parsed.limit = positiveNumber(next, '--limit')
+      index += 1
+    } else if (arg === '--count-cadence-days' && next) {
+      parsed.countCadenceDays = positiveNumber(next, '--count-cadence-days')
+      index += 1
+    } else if (arg === '--warmup-days' && next) {
+      parsed.warmupDays = positiveNumber(next, '--warmup-days')
       index += 1
     }
   }
