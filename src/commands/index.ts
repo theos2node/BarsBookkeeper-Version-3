@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneEnvPrune, backboneEnvs, backboneExplain, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneEnvPrune, backboneEnvs, backboneExplain, backboneListen, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -138,6 +138,12 @@ export const createCommands = (
     usage: 'bbk backbone backtest [--env <name>] [--days <days>] [--horizon-days <days>] [--count-cadence-days <days>] [--scenario steady|busy|slow|shrink|volatile|price-drift]',
     summary: 'Walk a simulated Toast timeline and verify rolling Backbone accuracy between sparse counts.',
     handler: backboneBacktest,
+  },
+  {
+    path: ['backbone', 'backtest-matrix'],
+    usage: 'bbk backbone backtest-matrix [--env <prefix>] [--days <days>] [--horizon-days <days>] [--count-cadence-days <days>]',
+    summary: 'Run rolling Backbone backtests across isolated scenario environments in parallel.',
+    handler: backboneBacktestMatrix,
   },
   {
     path: ['backbone', 'matrix'],

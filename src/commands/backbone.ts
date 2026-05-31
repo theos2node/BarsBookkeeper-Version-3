@@ -976,6 +976,71 @@ export const backboneBacktest = async (args: string[], context: CommandContext):
   }
 }
 
+export const backboneBacktestMatrix = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
+  const prefix = options.env ?? `rolling-matrix-${new Date().toISOString().replace(/[:.]/g, '-')}`
+
+  context.terminal.title('Backbone rolling backtest matrix')
+  context.terminal.subtitle(`scenarios: ${scenarios.join(', ')}`)
+
+  const results = await Promise.all(
+    scenarios.map(async (scenario) => {
+      const envName = cleanEnvName(`${prefix}-${scenario}`)
+      const envDir = resolve(context.config.dataDir, 'environments', envName)
+      const envDbPath = resolve(envDir, 'barsbookkeeper.sqlite')
+      await mkdir(envDir, { recursive: true })
+
+      await withBackendDb(context.config, async (controlDb: any) => {
+        ensureBackboneEnvironment(controlDb, {
+          name: envName,
+          dbPath: envDbPath,
+          description: `Backbone ${scenario} rolling backtest sandbox`,
+        })
+      })
+
+      const db = openDatabase(envDbPath)
+      try {
+        migrateDatabase(db)
+        const result = runBackboneRollingBacktest(db, {
+          startAt: options.asOf,
+          days: options.days,
+          horizonDays: options.horizonDays,
+          countCadenceDays: options.countCadenceDays,
+          warmupDays: options.warmupDays,
+          scenario,
+        })
+        return { envName, envDbPath, result }
+      } finally {
+        db.close()
+      }
+    }),
+  )
+
+  context.terminal.table(
+    results.map(({ envName, result }) => ({
+      env: envName,
+      scenario: result.scenario,
+      passed: result.passed,
+      runs: result.runCount,
+      evaluated: result.evaluatedPredictions,
+      counts: result.countSnapshots,
+      bottleMae: result.bottleMae,
+      maxBottleError: result.maxBottleError,
+      lowStockRecall: result.lowStockRecall,
+      lowStockPrecision: result.lowStockPrecision,
+      costOptions: result.costCuttingOptions,
+      shrinkSignals: result.shrinkSignals,
+      feedback: result.feedbackItems,
+      calibrated: result.calibratedSkus,
+    })),
+  )
+
+  const failed = results.filter(({ result }) => !result.passed)
+  if (failed.length > 0) throw new Error(`backbone_backtest_matrix_failed:${failed.map(({ result }) => result.scenario).join(',')}`)
+  context.terminal.success(`Backbone rolling backtest matrix passed ${results.length}/${results.length} scenarios.`)
+}
+
 export const backboneMatrix = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const scenarios = options.scenario ? [options.scenario] : backboneSimulationScenarios
