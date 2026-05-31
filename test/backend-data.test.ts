@@ -5,7 +5,7 @@ import { runOpenClawBrain } from '../src/brain/openclaw.js'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { getInventoryPosition, getInventoryPositions } from '../src/db/inventory.js'
 import { migrateDatabase } from '../src/db/migrations.js'
-import { ensureSku } from '../src/db/repositories.js'
+import { ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../src/db/repositories.js'
 import { seedDemoData } from '../src/db/seed.js'
 import { generateForecasts } from '../src/forecast/index.js'
 import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
@@ -294,6 +294,58 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(orders.length).toBeGreaterThan(0)
     expect(orders.flatMap((group) => group.items).some((item) => item.skuName === 'Burger Bun')).toBe(true)
     expect(db.prepare('SELECT COUNT(*) AS count FROM order_recommendations').get()?.count).toBeGreaterThan(0)
+  })
+
+  it('chooses order vendors by unit cost instead of absolute pack price', () => {
+    const skuId = ensureSku(db, { name: 'Well Rum 1L', unit: 'ml', category: 'liquor', parLevel: 4000 })
+    const smallPackVendor = ensureVendor(db, 'Small Pack Vendor')
+    const bulkVendor = ensureVendor(db, 'Bulk Value Vendor')
+    ensureVendorItem(db, {
+      vendorId: smallPackVendor,
+      skuId,
+      packSize: 100,
+      packUnit: 'split',
+      price: 30,
+      leadTimeDays: 1,
+      minOrderQty: 100,
+    })
+    ensureVendorItem(db, {
+      vendorId: bulkVendor,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 200,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    const menuItemId = ensureMenuItem(db, 'Well Rum Coke', 'well-rum-coke', 'cocktails')
+    upsertRecipeItem(db, { menuItemId, skuId, quantity: 100, unit: 'ml' })
+    ingestInvoices(db, [
+      {
+        vendor: 'Small Pack Vendor',
+        invoiceNumber: 'RUM-OPEN',
+        invoiceDate: '2026-05-01T09:00:00.000Z',
+        sku: 'Well Rum 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.3,
+        category: 'liquor',
+      },
+    ])
+    ingestToastSales(db, [
+      { externalId: 'RUM-SALE-1', occurredAt: '2026-05-10T21:00:00.000Z', menuItem: 'Well Rum Coke', quantitySold: 6 },
+      { externalId: 'RUM-SALE-2', occurredAt: '2026-05-11T21:00:00.000Z', menuItem: 'Well Rum Coke', quantitySold: 6 },
+    ])
+
+    const orders = generateVendorGroupedOrderRecommendations(db, {
+      asOf: '2026-05-12T00:00:00.000Z',
+      horizonDays: 7,
+      usageWindowDays: 7,
+    })
+    const item = orders.flatMap((group) => group.items).find((row) => row.skuName === 'Well Rum 1L')
+
+    expect(item?.vendorName).toBe('Bulk Value Vendor')
+    expect(item?.estimatedCost).toBeGreaterThan(0)
   })
 
   it('regenerates orders idempotently for the same forecast window', () => {

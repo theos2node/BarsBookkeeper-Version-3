@@ -106,7 +106,7 @@ npm run bbk -- backbone envs
 npm run bbk -- backbone env-prune --older-than-days 14
 ```
 
-`bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals.
+`bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals. Order recommendations choose active vendor items by unit cost, then lead time, so larger packs are not rejected just because their total pack price is higher.
 
 Action, gap, and trust reports include command-ready next steps where possible, including sparse note templates such as `bbk ingest note "House Vodka 1L <actual bottles> bottles" --dry-run` and drill-down commands like `bbk backbone explain --sku ...`.
 

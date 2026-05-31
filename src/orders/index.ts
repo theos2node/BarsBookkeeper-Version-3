@@ -60,7 +60,10 @@ export const generateVendorGroupedOrderRecommendations = (
          FROM vendor_items vi
          JOIN vendors v ON v.id = vi.vendor_id
          WHERE vi.sku_id = ? AND vi.active = 1
-         ORDER BY COALESCE(vi.price, 999999), vi.lead_time_days
+         ORDER BY
+           CASE WHEN vi.price IS NULL THEN 1 ELSE 0 END,
+           (vi.price / NULLIF(vi.pack_size, 0)),
+           vi.lead_time_days
          LIMIT 1`,
       )
       .get(position.skuId)
