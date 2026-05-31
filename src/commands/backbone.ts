@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
@@ -45,6 +45,7 @@ type ParsedOptions = {
   limit?: number
   countCadenceDays?: number
   warmupDays?: number
+  label?: string
 }
 
 type AuditCheck = {
@@ -197,6 +198,48 @@ export const backboneStatus = async (_args: string[], context: CommandContext): 
     renderRun(result, context)
     renderListenerHealth(db, context)
   })
+}
+
+export const backboneService = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const label = options.label ?? 'com.barsbookkeeper.backbone'
+  const intervalMs = options.intervalMs ?? 5 * 60 * 1000
+  const serviceDir = resolve(context.config.dataDir, 'launchd')
+  const logDir = resolve(context.config.dataDir, 'logs')
+  const plistPath = resolve(serviceDir, `${label}.plist`)
+  const stdoutPath = resolve(logDir, 'backbone-listener.out.log')
+  const stderrPath = resolve(logDir, 'backbone-listener.err.log')
+  const workingDirectory = resolve(context.cwd)
+
+  context.terminal.title('Backbone launchd service')
+  await mkdir(serviceDir, { recursive: true })
+  await mkdir(logDir, { recursive: true })
+
+  const plist = renderLaunchdPlist({
+    label,
+    workingDirectory,
+    dataDir: context.config.dataDir,
+    intervalMs,
+    stdoutPath,
+    stderrPath,
+  })
+  await writeFile(plistPath, plist, 'utf8')
+
+  context.terminal.success(`LaunchAgent plist written: ${plistPath}`)
+  context.terminal.dump({
+    label,
+    intervalMs,
+    workingDirectory,
+    dataDir: context.config.dataDir,
+    stdoutPath,
+    stderrPath,
+  })
+  context.terminal.section('Install commands')
+  context.terminal.line(`mkdir -p "$HOME/Library/LaunchAgents"`)
+  context.terminal.line(`cp "${plistPath}" "$HOME/Library/LaunchAgents/${label}.plist"`)
+  context.terminal.line(`launchctl unload "$HOME/Library/LaunchAgents/${label}.plist" 2>/dev/null || true`)
+  context.terminal.line(`launchctl load "$HOME/Library/LaunchAgents/${label}.plist"`)
+  context.terminal.line(`launchctl start "${label}"`)
 }
 
 export const backboneActions = async (_args: string[], context: CommandContext): Promise<void> => {
@@ -628,6 +671,66 @@ const buildHorizonRiskRows = (runs: HorizonRun[]): Array<Record<string, unknown>
     })
     .slice(0, 15)
 }
+
+const renderLaunchdPlist = (input: {
+  label: string
+  workingDirectory: string
+  dataDir: string
+  intervalMs: number
+  stdoutPath: string
+  stderrPath: string
+}): string => {
+  const intervalMs = Math.max(1000, input.intervalMs)
+  const args = [
+    '/usr/bin/env',
+    'npm',
+    'run',
+    'bbk',
+    '--',
+    'backbone',
+    'listen',
+    '--interval-ms',
+    String(intervalMs),
+  ]
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEscape(input.label)}</string>
+  <key>WorkingDirectory</key>
+  <string>${xmlEscape(input.workingDirectory)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BBK_DATA_DIR</key>
+    <string>${xmlEscape(input.dataDir)}</string>
+    <key>OPENCLAW_USE_CODEX</key>
+    <string>${xmlEscape(process.env.OPENCLAW_USE_CODEX ?? '0')}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(input.stdoutPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(input.stderrPath)}</string>
+</dict>
+</plist>
+`
+}
+
+const xmlEscape = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
 
 const withBackboneTargetDb = async <T>(
   context: CommandContext,
@@ -2050,6 +2153,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--warmup-days' && next) {
       parsed.warmupDays = positiveNumber(next, '--warmup-days')
+      index += 1
+    } else if (arg === '--label' && next) {
+      parsed.label = next
       index += 1
     }
   }

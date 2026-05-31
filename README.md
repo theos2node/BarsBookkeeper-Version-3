@@ -48,6 +48,7 @@ npm run bbk -- toast map-recipe "Smoke Test Martini" "House Vodka 1L" 75 ml
 npm run bbk -- brain run
 npm run bbk -- backbone run
 npm run bbk -- backbone listen
+npm run bbk -- backbone service --interval-ms 300000
 npm run bbk -- backbone status
 npm run bbk -- backbone verify --env acceptance --days 60
 npm run bbk -- backbone simulate --env test-lab --days 30
@@ -68,6 +69,7 @@ The Backbone model is the terminal-first prediction layer. It listens to the sam
 npm run bbk -- backbone run --horizon-days 7
 npm run bbk -- backbone plan --horizons 1,7,14,30
 npm run bbk -- backbone status
+npm run bbk -- backbone service --interval-ms 300000
 npm run bbk -- backbone actions
 npm run bbk -- backbone intake
 npm run bbk -- backbone accuracy
@@ -102,6 +104,14 @@ npm run bbk -- backbone listen --cycles 3 --interval-ms 1000
 npm run bbk -- backbone listen --toast-file ./samples/toast-orders.json --cycles 1
 npm run bbk -- backbone listen --skip-openclaw --cycles 1
 ```
+
+For unattended Mac mini operation, generate a user LaunchAgent plist:
+
+```sh
+npm run bbk -- backbone service --interval-ms 300000
+```
+
+The command writes the plist and log paths under `data/`, then prints the exact `launchctl` install commands. It does not embed Toast or API secrets in the plist; use `bbk toast connect` and the normal environment/config files for credentials.
 
 Every listener cycle is written to `backbone_listener_cycles`, including Toast status, OpenClaw review count, Backbone run ID, prediction count, low-stock count, feedback count, and any failure message. On startup, the listener marks stale abandoned `running` cycles as failed before starting a new cycle; use `--recover-stale-minutes` to tune that recovery window. OpenClaw review failures are journaled as warnings without stopping the Backbone model run, so prediction refreshes can continue even when the review layer is degraded. `bbk backbone status` includes the latest listener health rows so restart/debug state is available from the terminal.
 

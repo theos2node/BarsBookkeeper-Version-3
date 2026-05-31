@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -109,6 +109,7 @@ process.exit(1)
     await expectCliOk(['brain', 'run'], dataDir)
     await expectCliOk(['backbone', 'run'], dataDir)
     const backbonePlan = await expectCliOk(['backbone', 'plan', '--horizons', '1,7,14'], dataDir)
+    const backboneService = await expectCliOk(['backbone', 'service', '--interval-ms', '1000', '--label', 'com.barsbookkeeper.test'], dataDir)
     const listenOutput = await expectCliOk(
       [
         'backbone',
@@ -167,6 +168,9 @@ process.exit(1)
     expect(backbonePlan).toContain('Backbone horizon plan')
     expect(backbonePlan).toContain('Horizon summary')
     expect(backbonePlan).toContain('Escalating risks')
+    expect(backboneService).toContain('Backbone launchd service')
+    expect(backboneService).toContain('com.barsbookkeeper.test')
+    expect(backboneService).toContain('launchctl load')
     expect(listenOutput).toContain('Backbone listener stopped after 2 cycles')
     expect(listenOutput).toContain('file:')
     expect(resilientListenOutput).toContain('OpenClaw skipped this cycle: simulated_openclaw_failure')
@@ -240,6 +244,15 @@ process.exit(1)
     expect(
       scalar(db, "SELECT COUNT(*) AS value FROM evidence_items WHERE evidence_type = 'toast_missing_recipe'"),
     ).toBe(1)
+
+    const plist = await readFile(join(dataDir, 'launchd', 'com.barsbookkeeper.test.plist'), 'utf8')
+    expect(plist).toContain('<string>com.barsbookkeeper.test</string>')
+    expect(plist).toContain('<key>BBK_DATA_DIR</key>')
+    expect(plist).toContain(dataDir)
+    expect(plist).toContain('<string>backbone</string>')
+    expect(plist).toContain('<string>listen</string>')
+    expect(plist).not.toContain('TOAST_API_KEY')
+    expect(plist).not.toContain('TOAST_CLIENT_SECRET')
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_listener_cycles')).toBe(3)
     expect(scalar(db, 'SELECT COUNT(*) AS value FROM backbone_verifications')).toBe(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM backbone_verifications WHERE status = 'passed'")).toBe(1)
