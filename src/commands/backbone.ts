@@ -4,6 +4,8 @@ import { openDatabase, toNumber } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
 import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel } from '../backbone/index.js'
 import { runBackboneAccuracySimulation } from '../backbone/simulation.js'
+import { runOpenClawBrain } from '../brain/openclaw.js'
+import { pullToast } from '../ingest/toast.js'
 import { withBackendDb } from './backend.js'
 import type { CommandContext } from './types.js'
 
@@ -13,6 +15,12 @@ type ParsedOptions = {
   horizonDays?: number
   usageWindowDays?: number
   trainingDays?: number
+  cycles?: number
+  intervalMs?: number
+  toastFile?: string
+  toastStart?: string
+  toastEnd?: string
+  skipToast?: boolean
 }
 
 export const backboneRun = async (args: string[], context: CommandContext): Promise<void> => {
@@ -41,6 +49,65 @@ export const backboneStatus = async (_args: string[], context: CommandContext): 
     }
     renderRun(result, context)
   })
+}
+
+export const backboneListen = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const cycles = options.cycles ?? Number.POSITIVE_INFINITY
+  const intervalMs = options.intervalMs ?? 5 * 60 * 1000
+  let stopped = false
+  let completed = 0
+
+  const stop = () => {
+    stopped = true
+  }
+  process.once('SIGINT', stop)
+  process.once('SIGTERM', stop)
+
+  context.terminal.title('Backbone listener')
+  context.terminal.subtitle(
+    Number.isFinite(cycles)
+      ? `cycles: ${cycles}; interval: ${intervalMs}ms`
+      : `continuous; interval: ${intervalMs}ms`,
+  )
+
+  const db = openDatabase(context.config.dbPath)
+  try {
+    migrateDatabase(db)
+    while (!stopped && completed < cycles) {
+      completed += 1
+      const cycleStarted = new Date().toISOString()
+      const toast = await tryPullToast(db, context, options)
+      const openClaw = await runOpenClawBrain(db, context.config)
+      const backbone = runBackboneModel(db, {
+        asOf: options.asOf,
+        horizonDays: options.horizonDays,
+        usageWindowDays: options.usageWindowDays,
+        mode: 'live',
+      })
+
+      context.terminal.table([
+        {
+          cycle: completed,
+          started: cycleStarted,
+          toast: toast.summary,
+          reviewItems: openClaw.reviewItems,
+          runId: backbone.runId,
+          predictions: backbone.predictionCount,
+          lowStock: backbone.lowStockCount,
+          costOptions: backbone.costCuttingOptions,
+        },
+      ])
+
+      if (stopped || completed >= cycles) break
+      await sleep(intervalMs)
+    }
+    context.terminal.success(`Backbone listener stopped after ${completed} cycle${completed === 1 ? '' : 's'}.`)
+  } finally {
+    process.removeListener('SIGINT', stop)
+    process.removeListener('SIGTERM', stop)
+    db.close()
+  }
 }
 
 export const backboneSimulate = async (args: string[], context: CommandContext): Promise<void> => {
@@ -86,6 +153,31 @@ export const backboneSimulate = async (args: string[], context: CommandContext):
     }
   } finally {
     db.close()
+  }
+}
+
+const tryPullToast = async (
+  db: any,
+  context: CommandContext,
+  options: ParsedOptions,
+): Promise<{ ok: boolean; summary: string }> => {
+  if (options.skipToast) return { ok: true, summary: 'skipped' }
+
+  const toastArgs: string[] = []
+  if (options.toastFile) toastArgs.push('--file', options.toastFile)
+  if (options.toastStart) toastArgs.push('--start', options.toastStart)
+  if (options.toastEnd) toastArgs.push('--end', options.toastEnd)
+
+  try {
+    const result = await pullToast(db, context.config, toastArgs)
+    return {
+      ok: true,
+      summary: `${result.source}:${result.rowsPulled}/${result.ingest.recordsImported}`,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    context.terminal.warn(`Toast pull skipped this cycle: ${message}`)
+    return { ok: false, summary: `error:${message}` }
   }
 }
 
@@ -159,6 +251,25 @@ const parseOptions = (args: string[]): ParsedOptions => {
     } else if (arg === '--days' && next) {
       parsed.trainingDays = positiveNumber(next, '--days') - 1
       index += 1
+    } else if (arg === '--cycles' && next) {
+      parsed.cycles = positiveNumber(next, '--cycles')
+      index += 1
+    } else if (arg === '--once') {
+      parsed.cycles = 1
+    } else if (arg === '--interval-ms' && next) {
+      parsed.intervalMs = nonNegativeNumber(next, '--interval-ms')
+      index += 1
+    } else if (arg === '--toast-file' && next) {
+      parsed.toastFile = resolve(next)
+      index += 1
+    } else if (arg === '--start' && next) {
+      parsed.toastStart = next
+      index += 1
+    } else if (arg === '--end' && next) {
+      parsed.toastEnd = next
+      index += 1
+    } else if (arg === '--skip-toast' || arg === '--no-toast') {
+      parsed.skipToast = true
     }
   }
   return parsed
@@ -170,8 +281,16 @@ const positiveNumber = (value: string, flag: string): number => {
   return Math.round(number)
 }
 
+const nonNegativeNumber = (value: string, flag: string): number => {
+  const number = toNumber(value)
+  if (number < 0) throw new Error(`${flag}_must_be_non_negative`)
+  return Math.round(number)
+}
+
 const cleanEnvName = (value: string): string => {
   const clean = value.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80)
   if (!clean) throw new Error('environment_name_required')
   return clean
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))

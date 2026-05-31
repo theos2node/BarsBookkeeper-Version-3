@@ -107,6 +107,10 @@ process.exit(1)
     await expectCliOk(['toast', 'pull', '--file', join(fixturesDir, 'smoke-toast.json')], dataDir)
     await expectCliOk(['brain', 'run'], dataDir)
     await expectCliOk(['backbone', 'run'], dataDir)
+    const listenOutput = await expectCliOk(
+      ['backbone', 'listen', '--cycles', '2', '--interval-ms', '0', '--toast-file', join(fixturesDir, 'smoke-toast.json')],
+      dataDir,
+    )
     const backboneSimulation = await expectCliOk(['backbone', 'simulate', '--env', 'smoke', '--days', '30'], dataDir)
     await expectCliOk(['forecast', 'run'], dataDir)
     await expectCliOk(['orders', 'generate'], dataDir)
@@ -115,6 +119,8 @@ process.exit(1)
     expect(consoleOutput).toContain('Snapshot')
     expect(consoleOutput).toContain('Inventory')
     expect(consoleOutput).toContain('Open order recommendations')
+    expect(listenOutput).toContain('Backbone listener stopped after 2 cycles')
+    expect(listenOutput).toContain('file:')
     expect(backboneSimulation).toContain('bottleMae')
     expect(backboneSimulation).toContain('lowStockRecall')
 

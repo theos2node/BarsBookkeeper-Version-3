@@ -44,6 +44,7 @@ npm run bbk -- toast pull --start 2026-05-10T00:00:00.000Z --end 2026-05-11T00:0
 npm run bbk -- toast pull --file ./samples/toast-orders.json
 npm run bbk -- brain run
 npm run bbk -- backbone run
+npm run bbk -- backbone listen
 npm run bbk -- backbone status
 npm run bbk -- backbone simulate --env test-lab --days 30
 npm run bbk -- review
@@ -59,6 +60,14 @@ The Backbone model is the terminal-first prediction layer. It listens to the sam
 ```sh
 npm run bbk -- backbone run --horizon-days 7
 npm run bbk -- backbone status
+```
+
+For continuous terminal operation, run the listener. It attempts a Toast pull every cycle, runs OpenClaw review generation, and refreshes Backbone predictions. Temporary Toast failures are reported as warnings without stopping local prediction runs.
+
+```sh
+npm run bbk -- backbone listen
+npm run bbk -- backbone listen --cycles 3 --interval-ms 1000
+npm run bbk -- backbone listen --toast-file ./samples/toast-orders.json --cycles 1
 ```
 
 For destructive or time-warped testing, use isolated environments. Each simulation gets its own database under `data/environments/<name>/`, so multiple tests can run without touching the base product database.

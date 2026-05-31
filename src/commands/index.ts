@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
+import { backboneListen, backboneRun, backboneSimulate, backboneStatus } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -72,6 +72,12 @@ export const createCommands = (
     usage: 'bbk backbone status',
     summary: 'Show the latest Backbone prediction run.',
     handler: backboneStatus,
+  },
+  {
+    path: ['backbone', 'listen'],
+    usage: 'bbk backbone listen [--cycles <n>] [--interval-ms <ms>]',
+    summary: 'Continuously pull Toast, run OpenClaw, and refresh Backbone predictions.',
+    handler: backboneListen,
   },
   {
     path: ['backbone', 'simulate'],
