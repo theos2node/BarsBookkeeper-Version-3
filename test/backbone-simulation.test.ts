@@ -75,6 +75,15 @@ describe('Backbone prediction model', () => {
     expect(result.predictions.some((prediction) => prediction.costSignal.includes('audit shrink'))).toBe(true)
   })
 
+  it('finds cost-cutting options learned from sparse vendor invoice drift', () => {
+    const result = runBackboneAccuracySimulation(db, { scenario: 'price-drift' })
+
+    expect(result.passed).toBe(true)
+    expect(result.costCuttingOptions).toBeGreaterThan(0)
+    expect(result.predictions.some((prediction) => prediction.sku === 'Backbone Vodka 1L' && prediction.costSignal.includes('Value Spirits Co'))).toBe(true)
+    expect(result.predictions.some((prediction) => prediction.sku === 'Backbone Vodka 1L' && prediction.costSignal.includes('saves 0.022'))).toBe(true)
+  })
+
   it('scores sparse count feedback and carries calibration into future runs', () => {
     const result = runBackboneAccuracySimulation(db)
     expect(result.passed).toBe(true)

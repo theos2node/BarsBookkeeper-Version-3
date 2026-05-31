@@ -105,7 +105,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'simulate'],
-    usage: 'bbk backbone simulate [--env <name>] [--days <days>] [--scenario steady|busy|slow|shrink|volatile]',
+    usage: 'bbk backbone simulate [--env <name>] [--days <days>] [--scenario steady|busy|slow|shrink|volatile|price-drift]',
     summary: 'Create an isolated sandbox and test Backbone prediction accuracy.',
     handler: backboneSimulate,
   },

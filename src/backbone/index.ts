@@ -283,6 +283,20 @@ const latestPurchaseCost = (db: Db, skuId: number): number | null => {
   return row?.unit_cost === null || row?.unit_cost === undefined ? null : toNumber(row.unit_cost)
 }
 
+const highHistoricalPurchaseCost = (db: Db, skuId: number, asOf: string): number | null => {
+  const row = db
+    .prepare(
+      `SELECT MAX(unit_cost) AS unit_cost
+       FROM inventory_events
+       WHERE sku_id = ?
+         AND event_type = 'purchase'
+         AND unit_cost IS NOT NULL
+         AND occurred_at <= ?`,
+    )
+    .get(skuId, asOf)
+  return row?.unit_cost === null || row?.unit_cost === undefined ? null : toNumber(row.unit_cost)
+}
+
 const latestCountAgeDays = (db: Db, skuId: number, asOf: string): number | null => {
   const row = db
     .prepare(
@@ -402,13 +416,15 @@ const recommendationFor = (db: Db, skuId: number): { quantity: number; estimated
 
 const costSignalFor = (input: {
   latestCost: number | null
+  highHistoricalCost: number | null
   vendorCost: VendorCost | null
   shrinkDaily: number
   avgDailyUsage: number
 }): string => {
-  if (input.latestCost !== null && input.vendorCost?.unitCost !== null && input.vendorCost?.unitCost !== undefined) {
-    const saving = input.latestCost - input.vendorCost.unitCost
-    if (saving > Math.max(0.01, input.latestCost * 0.08)) {
+  const referenceCost = Math.max(input.latestCost ?? 0, input.highHistoricalCost ?? 0)
+  if (referenceCost > 0 && input.vendorCost?.unitCost !== null && input.vendorCost?.unitCost !== undefined) {
+    const saving = referenceCost - input.vendorCost.unitCost
+    if (saving > Math.max(0.01, referenceCost * 0.08)) {
       return `buy ${input.vendorCost.vendorName}: saves ${round(saving, 4)}/unit`
     }
   }
@@ -459,6 +475,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         const avgDailyUsage = Math.max(0, projectedUsage.dailyUsage)
         const vendorCost = cheapestVendorCost(db, position.skuId)
         const latestCost = latestPurchaseCost(db, position.skuId)
+        const highHistoricalCost = highHistoricalPurchaseCost(db, position.skuId, resolved.asOf)
         const countAge = latestCountAgeDays(db, position.skuId, resolved.asOf)
         const shrinkDaily = shrinkRate(db, position.skuId, resolved.asOf, resolved.usageWindowDays)
         const leadTime = vendorCost ? 2 : 4
@@ -476,7 +493,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
           leadTimeDays: leadTime,
         })
         const recommendation = recommendationFor(db, position.skuId)
-        const costSignal = costSignalFor({ latestCost, vendorCost, shrinkDaily, avgDailyUsage })
+        const costSignal = costSignalFor({ latestCost, highHistoricalCost, vendorCost, shrinkDaily, avgDailyUsage })
         const prediction: BackbonePrediction = {
           skuId: position.skuId,
           skuName: position.name,
@@ -517,6 +534,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
             shrinkDaily: round(shrinkDaily, 4),
             vendorCost,
             latestCost,
+            highHistoricalCost,
             calibration,
             baselineDailyUsage: round(baselineDailyUsage, 3),
             projectionMethod: projectedUsage.method,

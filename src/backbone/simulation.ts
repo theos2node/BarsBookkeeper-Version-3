@@ -10,9 +10,9 @@ export type BackboneSimulationOptions = {
   scenario?: BackboneSimulationScenario
 }
 
-export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow' | 'shrink' | 'volatile'
+export type BackboneSimulationScenario = 'steady' | 'busy' | 'slow' | 'shrink' | 'volatile' | 'price-drift'
 
-export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow', 'shrink', 'volatile']
+export const backboneSimulationScenarios: BackboneSimulationScenario[] = ['steady', 'busy', 'slow', 'shrink', 'volatile', 'price-drift']
 
 export type BackboneSimulationResult = {
   scenario: BackboneSimulationScenario
@@ -52,6 +52,12 @@ type ScenarioProfile = {
     tripleSec?: number
   }
   weekdayMultipliers?: Record<number, number>
+  seedCheapVodkaVendor?: boolean
+  lateCheapVodkaInvoice?: {
+    day: number
+    quantity: number
+    unitCost: number
+  }
 }
 
 const dayMs = 24 * 60 * 60 * 1000
@@ -102,6 +108,18 @@ const profiles: Record<BackboneSimulationScenario, ScenarioProfile> = {
       6: 2,
     },
   },
+  'price-drift': {
+    name: 'price-drift',
+    vodkaSales: 8,
+    margaritaSales: 10,
+    initial: { vodka: 16000, tequila: 20000, tripleSec: 8000 },
+    seedCheapVodkaVendor: false,
+    lateCheapVodkaInvoice: {
+      day: 28,
+      quantity: 1000,
+      unitCost: 0.028,
+    },
+  },
 }
 
 const isoDay = (start: Date, day: number, hour: number): string => {
@@ -147,11 +165,14 @@ export const runBackboneAccuracySimulation = (
   const start = new Date(options.startAt ?? '2026-05-01T08:00:00.000Z')
   const trainingDays = options.trainingDays ?? 29
   const profile = profiles[options.scenario ?? 'steady']
-  seedBackboneReference(db)
+  seedBackboneReference(db, profile)
   ingestInvoices(db, simulationInvoices(start, profile), 'Backbone simulation invoices')
 
   for (let day = 1; day <= trainingDays; day += 1) {
     ingestToastSales(db, simulationSales(start, day, profile), 'Backbone simulated Toast history')
+    if (profile.lateCheapVodkaInvoice?.day === day) {
+      ingestInvoices(db, simulationLateInvoices(start, profile), 'Backbone sparse vendor invoices')
+    }
     if (day === 15) ingestCounts(db, countSnapshot(start, day, profile, 'mid'), 'Backbone sparse hand counts')
   }
 
@@ -217,7 +238,7 @@ export const runBackboneAccuracySimulation = (
   }
 }
 
-const seedBackboneReference = (db: Db): void => {
+const seedBackboneReference = (db: Db, profile: ScenarioProfile): void => {
   const premium = ensureVendor(db, 'Premium Bottle House')
   const value = ensureVendor(db, 'Value Spirits Co')
 
@@ -226,7 +247,9 @@ const seedBackboneReference = (db: Db): void => {
   const tripleSec = ensureSku(db, { name: 'Backbone Triple Sec 1L', unit: 'ml', category: 'liquor', parLevel: 2500 })
 
   ensureVendorItem(db, { vendorId: premium, skuId: vodka, packSize: 1000, packUnit: 'bottle', price: 50, leadTimeDays: 3, minOrderQty: 1000 })
-  ensureVendorItem(db, { vendorId: value, skuId: vodka, packSize: 1000, packUnit: 'bottle', price: 28, leadTimeDays: 3, minOrderQty: 1000 })
+  if (profile.seedCheapVodkaVendor !== false) {
+    ensureVendorItem(db, { vendorId: value, skuId: vodka, packSize: 1000, packUnit: 'bottle', price: 28, leadTimeDays: 3, minOrderQty: 1000 })
+  }
   ensureVendorItem(db, { vendorId: value, skuId: tequila, packSize: 1000, packUnit: 'bottle', price: 32, leadTimeDays: 3, minOrderQty: 1000 })
   ensureVendorItem(db, { vendorId: value, skuId: tripleSec, packSize: 1000, packUnit: 'bottle', price: 16, leadTimeDays: 3, minOrderQty: 1000 })
 
@@ -243,6 +266,23 @@ const simulationInvoices = (start: Date, profile: ScenarioProfile): InvoiceRow[]
   { vendor: 'Value Spirits Co', invoiceNumber: `BB-SIM-${profile.name}-TRIPLE`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Triple Sec 1L', quantity: profile.initial.tripleSec, unit: 'ml', unitCost: 0.016, category: 'liquor' },
 ]
 
+const simulationLateInvoices = (start: Date, profile: ScenarioProfile): InvoiceRow[] => {
+  if (!profile.lateCheapVodkaInvoice) return []
+  const invoice = profile.lateCheapVodkaInvoice
+  return [
+    {
+      vendor: 'Value Spirits Co',
+      invoiceNumber: `BB-SIM-${profile.name}-LATE-VODKA`,
+      invoiceDate: isoDay(start, invoice.day, 9),
+      sku: 'Backbone Vodka 1L',
+      quantity: invoice.quantity,
+      unit: 'ml',
+      unitCost: invoice.unitCost,
+      category: 'liquor',
+    },
+  ]
+}
+
 const simulationSales = (start: Date, day: number, profile: ScenarioProfile): ToastSalesRow[] => {
   const sales = salesForDay(start, day, profile)
   return [
@@ -252,13 +292,18 @@ const simulationSales = (start: Date, day: number, profile: ScenarioProfile): To
 }
 
 const countSnapshot = (start: Date, day: number, profile: ScenarioProfile, label: 'mid' | 'end'): CountRow[] => [
-  { countId: `BB-SIM-${profile.name}-${label}-VODKA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: profile.initial.vodka - cumulativeConsumption(start, day, profile, 'vodka') - hiddenShrink(profile, 'vodka', day), unit: 'ml' },
+  { countId: `BB-SIM-${profile.name}-${label}-VODKA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Vodka 1L', countedQuantity: profile.initial.vodka + latePurchase(profile, 'vodka', day) - cumulativeConsumption(start, day, profile, 'vodka') - hiddenShrink(profile, 'vodka', day), unit: 'ml' },
   { countId: `BB-SIM-${profile.name}-${label}-TEQUILA`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Tequila 1L', countedQuantity: profile.initial.tequila - cumulativeConsumption(start, day, profile, 'tequila') - hiddenShrink(profile, 'tequila', day), unit: 'ml' },
   { countId: `BB-SIM-${profile.name}-${label}-TRIPLE`, occurredAt: isoDay(start, day, 23), sku: 'Backbone Triple Sec 1L', countedQuantity: profile.initial.tripleSec - cumulativeConsumption(start, day, profile, 'tripleSec') - hiddenShrink(profile, 'tripleSec', day), unit: 'ml' },
 ]
 
 const hiddenShrink = (profile: ScenarioProfile, sku: keyof NonNullable<ScenarioProfile['hiddenShrinkDaily']>, day: number): number =>
   (profile.hiddenShrinkDaily?.[sku] ?? 0) * day
+
+const latePurchase = (profile: ScenarioProfile, sku: 'vodka' | 'tequila' | 'tripleSec', day: number): number => {
+  if (sku !== 'vodka' || !profile.lateCheapVodkaInvoice || day < profile.lateCheapVodkaInvoice.day) return 0
+  return profile.lateCheapVodkaInvoice.quantity
+}
 
 const bottleSize = (db: Db, skuId: number): number => {
   const row = db
