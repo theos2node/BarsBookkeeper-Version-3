@@ -339,6 +339,49 @@ export const backboneService = async (args: string[], context: CommandContext): 
   context.terminal.line(`launchctl start "${label}"`)
 }
 
+export const backboneMaintainService = async (args: string[], context: CommandContext): Promise<void> => {
+  const options = parseOptions(args)
+  const label = options.label ?? 'com.barsbookkeeper.backbone-maintenance'
+  const intervalMs = options.intervalMs ?? 24 * 60 * 60 * 1000
+  const serviceDir = resolve(context.config.dataDir, 'launchd')
+  const logDir = resolve(context.config.dataDir, 'logs')
+  const plistPath = resolve(serviceDir, `${label}.plist`)
+  const stdoutPath = resolve(logDir, 'backbone-maintenance.out.log')
+  const stderrPath = resolve(logDir, 'backbone-maintenance.err.log')
+  const workingDirectory = resolve(context.cwd)
+
+  context.terminal.title('Backbone maintenance launchd service')
+  await mkdir(serviceDir, { recursive: true })
+  await mkdir(logDir, { recursive: true })
+
+  const plist = renderMaintenanceLaunchdPlist({
+    label,
+    workingDirectory,
+    dataDir: context.config.dataDir,
+    intervalMs,
+    stdoutPath,
+    stderrPath,
+  })
+  await writeFile(plistPath, plist, 'utf8')
+
+  context.terminal.success(`LaunchAgent plist written: ${plistPath}`)
+  context.terminal.dump({
+    label,
+    intervalMs,
+    startIntervalSeconds: Math.max(60, Math.round(intervalMs / 1000)),
+    workingDirectory,
+    dataDir: context.config.dataDir,
+    stdoutPath,
+    stderrPath,
+  })
+  context.terminal.section('Install commands')
+  context.terminal.line(`mkdir -p "$HOME/Library/LaunchAgents"`)
+  context.terminal.line(`cp "${plistPath}" "$HOME/Library/LaunchAgents/${label}.plist"`)
+  context.terminal.line(`launchctl unload "$HOME/Library/LaunchAgents/${label}.plist" 2>/dev/null || true`)
+  context.terminal.line(`launchctl load "$HOME/Library/LaunchAgents/${label}.plist"`)
+  context.terminal.line(`launchctl start "${label}"`)
+}
+
 export const backboneSnapshot = async (args: string[], context: CommandContext): Promise<void> => {
   const options = parseOptions(args)
   const label = cleanEnvName(options.label ?? `backbone-${new Date().toISOString().replace(/[:.]/g, '-')}`)
@@ -1270,6 +1313,56 @@ ${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(input.stdoutPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(input.stderrPath)}</string>
+</dict>
+</plist>
+`
+}
+
+const renderMaintenanceLaunchdPlist = (input: {
+  label: string
+  workingDirectory: string
+  dataDir: string
+  intervalMs: number
+  stdoutPath: string
+  stderrPath: string
+}): string => {
+  const intervalSeconds = Math.max(60, Math.round(input.intervalMs / 1000))
+  const args = [
+    '/usr/bin/env',
+    'npm',
+    'run',
+    'bbk',
+    '--',
+    'backbone',
+    'maintain',
+  ]
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEscape(input.label)}</string>
+  <key>WorkingDirectory</key>
+  <string>${xmlEscape(input.workingDirectory)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BBK_DATA_DIR</key>
+    <string>${xmlEscape(input.dataDir)}</string>
+    <key>OPENCLAW_USE_CODEX</key>
+    <string>${xmlEscape(process.env.OPENCLAW_USE_CODEX ?? '0')}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>${intervalSeconds}</integer>
   <key>StandardOutPath</key>
   <string>${xmlEscape(input.stdoutPath)}</string>
   <key>StandardErrorPath</key>

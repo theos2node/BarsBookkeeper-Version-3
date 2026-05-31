@@ -1,7 +1,7 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
 import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
-import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMaintainHistory, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
+import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMaintainHistory, backboneMaintainService, backboneMatrix, backboneMemory, backbonePlan, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneVerify, backboneVerifyHistory } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
 
 export const createCommands = (
@@ -114,6 +114,12 @@ export const createCommands = (
     usage: 'bbk backbone maintain-history [--limit <n>]',
     summary: 'Show recent persisted Backbone maintenance runs.',
     handler: backboneMaintainHistory,
+  },
+  {
+    path: ['backbone', 'maintain-service'],
+    usage: 'bbk backbone maintain-service [--interval-ms <ms>] [--label <launchd-label>]',
+    summary: 'Write a macOS launchd plist for scheduled Backbone maintenance.',
+    handler: backboneMaintainService,
   },
   {
     path: ['backbone', 'plan'],
