@@ -115,23 +115,50 @@ const bottleSize = (db: Db, skuId: number): number => {
   return Math.max(1, toNumber(row?.pack_size, 1000))
 }
 
-const updateCalibrationForSku = (db: Db, skuId: number): void => {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS sample_count,
-              AVG(error_quantity) AS mean_error,
-              AVG(absolute_error_quantity) AS mean_abs_error,
-              AVG(bottle_error) AS mean_bottle_error
-       FROM backbone_feedback
-       WHERE sku_id = ?`,
-    )
-    .get(skuId)
+const calibrationHalfLifeDays = 45
 
-  const sampleCount = toNumber(row?.sample_count)
+const recencyWeight = (evaluatedAt: string, latestEvaluatedAt: string): number => {
+  const latestTime = new Date(latestEvaluatedAt).getTime()
+  const evaluatedTime = new Date(evaluatedAt).getTime()
+  if (!Number.isFinite(latestTime) || !Number.isFinite(evaluatedTime)) return 1
+  const ageDays = Math.max(0, (latestTime - evaluatedTime) / (24 * 60 * 60 * 1000))
+  return Math.pow(0.5, ageDays / calibrationHalfLifeDays)
+}
+
+const updateCalibrationForSku = (db: Db, skuId: number): void => {
+  const rows = db
+    .prepare(
+      `SELECT error_quantity,
+              absolute_error_quantity,
+              bottle_error,
+              evaluated_at
+       FROM backbone_feedback
+       WHERE sku_id = ?
+       ORDER BY evaluated_at`,
+    )
+    .all(skuId)
+
+  const sampleCount = rows.length
   if (sampleCount === 0) return
-  const meanError = toNumber(row?.mean_error)
-  const meanAbsError = toNumber(row?.mean_abs_error)
-  const meanBottleError = toNumber(row?.mean_bottle_error)
+  const latestEvaluatedAt = rows.reduce((latest, row) => {
+    const evaluatedAt = toStringValue(row.evaluated_at)
+    return !latest || new Date(evaluatedAt).getTime() > new Date(latest).getTime() ? evaluatedAt : latest
+  }, '')
+  let totalWeight = 0
+  let weightedError = 0
+  let weightedAbsError = 0
+  let weightedBottleError = 0
+  for (const row of rows) {
+    const weight = recencyWeight(toStringValue(row.evaluated_at), latestEvaluatedAt)
+    totalWeight += weight
+    weightedError += toNumber(row.error_quantity) * weight
+    weightedAbsError += toNumber(row.absolute_error_quantity) * weight
+    weightedBottleError += toNumber(row.bottle_error) * weight
+  }
+
+  const meanError = round(weightedError / Math.max(1, totalWeight), 3)
+  const meanAbsError = round(weightedAbsError / Math.max(1, totalWeight), 3)
+  const meanBottleError = round(weightedBottleError / Math.max(1, totalWeight), 4)
   const usageAdjustmentDaily = round(-meanError / 7, 4)
   const confidenceAdjustment = round(-Math.min(0.3, meanBottleError * 0.2), 3)
 

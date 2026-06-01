@@ -76,7 +76,7 @@ npm run bbk -- review reverse <decision-id>
 
 ## Backbone
 
-The Backbone model is the terminal-first prediction layer. It listens to the same SQLite event ledger built from Toast sales, invoices, and sparse hand counts, then persists each run in `backbone_runs` and `backbone_predictions`. Later hand counts are scored into `backbone_feedback` and rolled into `backbone_calibrations`, so sparse bottle counts ground the next prediction cycle instead of being treated as one-off corrections. Each prediction also carries an uncertainty band and stockout probability so sparse or stale inputs show up as operational risk instead of overconfident point estimates.
+The Backbone model is the terminal-first prediction layer. It listens to the same SQLite event ledger built from Toast sales, invoices, and sparse hand counts, then persists each run in `backbone_runs` and `backbone_predictions`. Later hand counts are scored into `backbone_feedback` and rolled into recency-weighted `backbone_calibrations`, so sparse bottle counts ground the next prediction cycle instead of being treated as one-off corrections. Each prediction also carries an uncertainty band and stockout probability so sparse or stale inputs show up as operational risk instead of overconfident point estimates.
 
 ```sh
 npm run bbk -- backbone run --horizon-days 7

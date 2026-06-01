@@ -3,7 +3,7 @@ import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
 import { ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../src/db/repositories.js'
 import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
-import { getLatestBackboneRun, runBackboneModel } from '../src/backbone/index.js'
+import { getLatestBackboneRun, runBackboneModel, scoreBackboneFeedback } from '../src/backbone/index.js'
 import { backboneSimulationScenarios, runBackboneAccuracySimulation, runBackboneRollingBacktest } from '../src/backbone/simulation.js'
 
 describe('Backbone prediction model', () => {
@@ -186,6 +186,71 @@ describe('Backbone prediction model', () => {
 
     expect(calibrated.calibratedSkus).toBeGreaterThanOrEqual(3)
     expect(calibrated.predictions.filter((prediction) => prediction.skuName.startsWith('Backbone ') && prediction.calibrationSamples > 0)).toHaveLength(3)
+  })
+
+  it('weights recent sparse count feedback above stale calibration errors', () => {
+    const vendorId = ensureVendor(db, 'Adaptive Distributor')
+    const skuId = ensureSku(db, { name: 'Adaptive Vodka 1L', unit: 'ml', category: 'liquor' })
+    ensureVendorItem(db, {
+      vendorId,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 20,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    ingestInvoices(db, [
+      {
+        vendor: 'Adaptive Distributor',
+        invoiceNumber: 'ADAPTIVE-OPEN',
+        invoiceDate: '2026-01-01T09:00:00.000Z',
+        sku: 'Adaptive Vodka 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.02,
+        category: 'liquor',
+      },
+    ])
+
+    runBackboneModel(db, {
+      asOf: '2026-01-01T12:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+    ingestCounts(db, [
+      {
+        countId: 'ADAPTIVE-OLD-HIGH',
+        occurredAt: '2026-01-02T12:00:00.000Z',
+        sku: 'Adaptive Vodka 1L',
+        countedQuantity: 1700,
+        unit: 'ml',
+      },
+    ])
+    expect(scoreBackboneFeedback(db, { asOf: '2026-01-02T13:00:00.000Z' })).toBe(1)
+
+    runBackboneModel(db, {
+      asOf: '2026-04-01T12:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+    ingestCounts(db, [
+      {
+        countId: 'ADAPTIVE-RECENT-LOW',
+        occurredAt: '2026-04-02T12:00:00.000Z',
+        sku: 'Adaptive Vodka 1L',
+        countedQuantity: 1000,
+        unit: 'ml',
+      },
+    ])
+    expect(scoreBackboneFeedback(db, { asOf: '2026-04-02T13:00:00.000Z' })).toBe(1)
+
+    const calibration = db.prepare('SELECT * FROM backbone_calibrations WHERE sku_id = ?').get(skuId)
+    expect(calibration?.sample_count).toBe(2)
+    expect(calibration?.mean_error_quantity).toBeLessThan(-300)
+    expect(calibration?.usage_adjustment_daily).toBeGreaterThan(40)
   })
 
   it('uses vendor lead time when escalating low-stock risk', () => {

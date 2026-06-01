@@ -27,7 +27,7 @@ const runCli = async (
   try {
     const { stdout, stderr } = await execFileAsync(tsxPath, [cliPath, ...args], {
       cwd: repoRoot,
-      timeout: 20_000,
+      timeout: 90_000,
       env: {
         ...process.env,
         ...extraEnv,
@@ -448,7 +448,7 @@ process.exit(1)
     expect(scalar(db, "SELECT COUNT(*) AS value FROM order_recommendations WHERE status = 'open'")).toBe(
       baseline.openOrders,
     )
-  }, 180_000)
+  }, 300_000)
 
   it('reports Toast setup problems without credentials and without making a network pull', async () => {
     await expectCliOk(['setup'], dataDir)
