@@ -318,6 +318,68 @@ describe('Backbone prediction model', () => {
     expect(unscoredCountFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toHaveLength(0)
   })
 
+  it('uses configurable prediction-target age when scoring sparse count feedback', () => {
+    const vendorId = ensureVendor(db, 'Target Age Distributor')
+    const skuId = ensureSku(db, { name: 'Target Age Vodka 1L', unit: 'ml', category: 'liquor' })
+    ensureVendorItem(db, {
+      vendorId,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 20,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    ingestInvoices(db, [
+      {
+        vendor: 'Target Age Distributor',
+        invoiceNumber: 'TARGET-AGE-OPEN',
+        invoiceDate: '2026-01-01T09:00:00.000Z',
+        sku: 'Target Age Vodka 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.02,
+        category: 'liquor',
+      },
+    ])
+
+    runBackboneModel(db, {
+      asOf: '2026-01-01T12:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+    ingestCounts(db, [
+      {
+        countId: 'TARGET-AGE-LATE-COUNT',
+        occurredAt: '2026-01-20T12:00:00.000Z',
+        sku: 'Target Age Vodka 1L',
+        countedQuantity: 700,
+        unit: 'ml',
+      },
+    ])
+
+    expect(scoreBackboneFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toBe(0)
+    expect(unscoredCountFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toEqual([
+      expect.objectContaining({
+        skuName: 'Target Age Vodka 1L',
+        reason: 'stale_prediction_target',
+      }),
+    ])
+
+    const relaxedRun = runBackboneModel(db, {
+      asOf: '2026-01-20T13:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+      maxFeedbackTargetAgeDays: 30,
+    })
+
+    expect(relaxedRun.feedbackItems).toBe(1)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback WHERE sku_id = ?').get(skuId)?.count).toBe(1)
+    expect(unscoredCountFeedback(db, { asOf: '2026-01-20T13:00:00.000Z', maxTargetAgeDays: 30 })).toHaveLength(0)
+  })
+
   it('calibrates only against evidence-backed count adjustments', () => {
     const vendorId = ensureVendor(db, 'Grounded Count Distributor')
     const skuId = ensureSku(db, { name: 'Grounded Count Vodka 1L', unit: 'ml', category: 'liquor' })

@@ -6,8 +6,10 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { runBackboneModel, unscoredCountFeedback } from '../src/backbone/index.js'
 import { openDatabase, toNumber, type Db } from '../src/db/database.js'
 import { createInventoryEvent, ensureSku } from '../src/db/repositories.js'
+import { ingestCounts, ingestInvoices } from '../src/ingest/index.js'
 
 const execFileAsync = promisify(execFile)
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -569,6 +571,53 @@ process.exit(1)
     expect(gaps).toContain('Manual Correction Vodka 1L')
     expect(gaps).toContain('no hand count yet')
   }, 30_000)
+
+  it('uses configurable feedback target age for unscored count gaps', async () => {
+    await expectCliOk(['setup'], dataDir)
+
+    const targetDb = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    try {
+      ingestInvoices(targetDb, [
+        {
+          vendor: 'Target Age Distributor',
+          invoiceNumber: 'TARGET-AGE-OPEN',
+          invoiceDate: '2026-01-01T09:00:00.000Z',
+          sku: 'Target Age Vodka 1L',
+          quantity: 1000,
+          unit: 'ml',
+          unitCost: 0.02,
+          category: 'liquor',
+        },
+      ])
+      runBackboneModel(targetDb, {
+        asOf: '2026-01-01T12:00:00.000Z',
+        horizonDays: 1,
+        usageWindowDays: 7,
+        mode: 'evaluation',
+      })
+      ingestCounts(targetDb, [
+        {
+          countId: 'TARGET-AGE-LATE-COUNT',
+          occurredAt: '2026-01-20T12:00:00.000Z',
+          sku: 'Target Age Vodka 1L',
+          countedQuantity: 700,
+          unit: 'ml',
+        },
+      ])
+      expect(scalar(targetDb, 'SELECT COUNT(*) AS value FROM backbone_predictions')).toBeGreaterThan(0)
+      expect(unscoredCountFeedback(targetDb, { maxTargetAgeDays: 30 })).toHaveLength(0)
+    } finally {
+      targetDb.close()
+    }
+
+    const strictGaps = await expectCliOk(['backbone', 'gaps', '--limit', '8', '--max-feedback-target-age-days', '14'], dataDir)
+    expect(strictGaps).toContain('restore prediction cadence')
+    expect(strictGaps).toContain('Target Age Vodka 1L')
+
+    const relaxedGaps = await expectCliOk(['backbone', 'gaps', '--limit', '8', '--max-feedback-target-age-days', '30'], dataDir)
+    expect(relaxedGaps).not.toContain('restore prediction cadence')
+    expect(relaxedGaps).toContain('unscoredCountEvents: 0')
+  }, 120_000)
 
   it('dry-runs and force-prunes isolated Backbone environments safely', async () => {
     await expectCliOk(['setup'], dataDir)

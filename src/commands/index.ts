@@ -75,7 +75,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'run'],
-    usage: 'bbk backbone run [--as-of <iso>] [--horizon-days <days>]',
+    usage: 'bbk backbone run [--as-of <iso>] [--horizon-days <days>] [--max-feedback-target-age-days <days>]',
     summary: 'Run the continuously learned inventory prediction model.',
     handler: backboneRun,
   },
@@ -111,7 +111,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'maintain'],
-    usage: 'bbk backbone maintain [--label <name>] [--verify] [--scenario <name>] [--limit <n>] [--max-age-minutes <minutes>] [--max-count-age-days <days>]',
+    usage: 'bbk backbone maintain [--label <name>] [--verify] [--scenario <name>] [--limit <n>] [--max-age-minutes <minutes>] [--max-count-age-days <days>] [--max-feedback-target-age-days <days>]',
     summary: 'Run unattended Backbone maintenance: snapshot verification, audit checks, and data-gap persistence.',
     handler: backboneMaintain,
   },
@@ -123,7 +123,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'maintain-service'],
-    usage: 'bbk backbone maintain-service [--interval-ms <ms>] [--label <launchd-label>] [--verify] [--scenario <name>] [--days <n>] [--count-cadence-days <n>]',
+    usage: 'bbk backbone maintain-service [--interval-ms <ms>] [--label <launchd-label>] [--verify] [--scenario <name>] [--days <n>] [--count-cadence-days <n>] [--max-feedback-target-age-days <days>]',
     summary: 'Write a macOS launchd plist for scheduled Backbone maintenance.',
     handler: backboneMaintainService,
   },
@@ -135,13 +135,13 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'audit'],
-    usage: 'bbk backbone audit [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>] [--max-count-age-days <days>]',
+    usage: 'bbk backbone audit [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>] [--max-count-age-days <days>] [--max-feedback-target-age-days <days>]',
     summary: 'Check Backbone listener, prediction, feedback, and signal health.',
     handler: backboneAudit,
   },
   {
     path: ['backbone', 'trust'],
-    usage: 'bbk backbone trust [--limit <n>] [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>] [--max-count-age-days <days>]',
+    usage: 'bbk backbone trust [--limit <n>] [--max-age-minutes <minutes>] [--max-run-age-minutes <minutes>] [--max-count-age-days <days>] [--max-feedback-target-age-days <days>]',
     summary: 'Summarize Backbone readiness, verification, uncertainty, maintenance, and next actions.',
     handler: backboneTrust,
   },
@@ -195,7 +195,7 @@ export const createCommands = (
   },
   {
     path: ['backbone', 'gaps'],
-    usage: 'bbk backbone gaps [--env <name>] [--limit <n>] [--max-count-age-days <days>]',
+    usage: 'bbk backbone gaps [--env <name>] [--limit <n>] [--max-count-age-days <days>] [--max-feedback-target-age-days <days>]',
     summary: 'Prioritize the smallest missing inputs that would improve Backbone prediction quality.',
     handler: backboneGaps,
   },

@@ -11,6 +11,7 @@ export type BackboneOptions = {
   usageWindowDays?: number
   mode?: BackboneMode
   environmentId?: number | null
+  maxFeedbackTargetAgeDays?: number
 }
 
 export type BackbonePrediction = {
@@ -128,6 +129,7 @@ const bottleSize = (db: Db, skuId: number): number => {
 }
 
 const calibrationHalfLifeDays = 45
+export const defaultFeedbackTargetAgeDays = 14
 
 const countGroundingPredicate = (eventAlias: string): string => `(
   EXISTS (
@@ -207,7 +209,7 @@ const updateCalibrationForSku = (db: Db, skuId: number): void => {
 
 export const scoreBackboneFeedback = (db: Db, options: { asOf?: string; maxTargetAgeDays?: number } = {}): number => {
   const asOf = options.asOf ?? new Date().toISOString()
-  const maxTargetAgeDays = Math.max(0, options.maxTargetAgeDays ?? 14)
+  const maxTargetAgeDays = Math.max(0, options.maxTargetAgeDays ?? defaultFeedbackTargetAgeDays)
   const countRows = db
     .prepare(
       `SELECT e.id AS count_event_id,
@@ -618,7 +620,7 @@ const stockoutProbabilityFor = (predictedOnHand: number, uncertainty: number): n
 
 export const unscoredCountFeedback = (db: Db, options: { asOf?: string; maxTargetAgeDays?: number; limit?: number } = {}): UnscoredCountFeedback[] => {
   const asOf = options.asOf ?? new Date().toISOString()
-  const maxTargetAgeDays = Math.max(0, options.maxTargetAgeDays ?? 14)
+  const maxTargetAgeDays = Math.max(0, options.maxTargetAgeDays ?? defaultFeedbackTargetAgeDays)
   const rows = db
     .prepare(
       `SELECT e.id AS count_event_id,
@@ -657,10 +659,12 @@ export const unscoredCountFeedback = (db: Db, options: { asOf?: string; maxTarge
     .all(asOf, options.limit ?? 100)
 
   return rows
-    .map((row: any): UnscoredCountFeedback => {
+    .map((row: any): UnscoredCountFeedback | null => {
       const occurredAt = toStringValue(row.occurred_at)
       const latestTargetAt = toStringValue(row.latest_target_at)
       const targetAgeDays = latestTargetAt ? daysBetween(occurredAt, latestTargetAt) : null
+      const hasFreshTarget = latestTargetAt && targetAgeDays !== null && targetAgeDays <= maxTargetAgeDays
+      if (hasFreshTarget) return null
       return {
         countEventId: toNumber(row.count_event_id),
         skuId: toNumber(row.sku_id),
@@ -670,10 +674,10 @@ export const unscoredCountFeedback = (db: Db, options: { asOf?: string; maxTarge
         actualOnHand: round(toNumber(row.actual_on_hand), 2),
         latestTargetAt,
         targetAgeDays: targetAgeDays === null ? null : round(targetAgeDays, 1),
-        reason: latestTargetAt && targetAgeDays !== null && targetAgeDays > maxTargetAgeDays ? 'stale_prediction_target' : 'no_prediction_target',
+        reason: latestTargetAt ? 'stale_prediction_target' : 'no_prediction_target',
       }
     })
-    .filter((row) => row.reason === 'no_prediction_target' || (row.targetAgeDays ?? 0) > maxTargetAgeDays)
+    .filter((row): row is UnscoredCountFeedback => row !== null)
 }
 
 const recommendationFor = (db: Db, skuId: number): { quantity: number; estimatedCost: number | null } => {
@@ -720,10 +724,11 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
     usageWindowDays: options.usageWindowDays ?? 28,
     mode: options.mode ?? 'live',
     environmentId: options.environmentId ?? null,
+    maxFeedbackTargetAgeDays: Math.max(0, options.maxFeedbackTargetAgeDays ?? defaultFeedbackTargetAgeDays),
   }
 
   return withTransaction(db, () => {
-    const feedbackItems = scoreBackboneFeedback(db, { asOf: resolved.asOf })
+    const feedbackItems = scoreBackboneFeedback(db, { asOf: resolved.asOf, maxTargetAgeDays: resolved.maxFeedbackTargetAgeDays })
     const runId = createRun(db, resolved)
     try {
       generateForecasts(db, resolved)

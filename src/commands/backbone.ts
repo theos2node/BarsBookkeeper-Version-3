@@ -4,7 +4,7 @@ import { hostname } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
-import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel, unscoredCountFeedback } from '../backbone/index.js'
+import { defaultFeedbackTargetAgeDays, ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel, unscoredCountFeedback } from '../backbone/index.js'
 import {
   backboneSimulationScenarios,
   runBackboneAccuracySimulation,
@@ -39,6 +39,7 @@ type ParsedOptions = {
   maxRunAgeMinutes?: number
   maxCountAgeDays?: number
   maxFeedbackAgeDays?: number
+  maxFeedbackTargetAgeDays?: number
   maxBottleMae?: number
   maxBiasBottles?: number
   recoverStaleMinutes?: number
@@ -281,6 +282,7 @@ export const backboneRun = async (args: string[], context: CommandContext): Prom
       asOf: options.asOf,
       horizonDays: options.horizonDays,
       usageWindowDays: options.usageWindowDays,
+      maxFeedbackTargetAgeDays: options.maxFeedbackTargetAgeDays,
       mode: 'live',
     })
     context.terminal.success(`Backbone run ${result.runId} completed.`)
@@ -299,6 +301,7 @@ export const backbonePlan = async (args: string[], context: CommandContext): Pro
         asOf: options.asOf,
         horizonDays,
         usageWindowDays: options.usageWindowDays,
+        maxFeedbackTargetAgeDays: options.maxFeedbackTargetAgeDays,
         mode: 'live',
       }),
     )
@@ -515,6 +518,7 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
   const maxAgeMinutes = options.maxAgeMinutes ?? 60
   const maxRunAgeMinutes = options.maxRunAgeMinutes ?? maxAgeMinutes
   const maxCountAgeDays = options.maxCountAgeDays ?? 45
+  const maxFeedbackTargetAgeDays = options.maxFeedbackTargetAgeDays ?? defaultFeedbackTargetAgeDays
   const limit = options.limit ?? 12
 
   context.terminal.title('Backbone maintenance')
@@ -540,11 +544,11 @@ export const backboneMaintain = async (args: string[], context: CommandContext):
     : undefined
 
   const summary = await withBackendDb(context.config, async (db: any): Promise<MaintenanceSummary> => {
-    const auditChecks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays })
+    const auditChecks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays, maxFeedbackTargetAgeDays })
     const auditFailures = auditChecks.filter((check) => check.status === 'fail')
     const auditWarnings = auditChecks.filter((check) => check.status === 'warn')
-    const gapRows = buildBackboneGapRows(db, { limit, maxCountAgeDays })
-    const gaps = buildBackboneGapSummary(db, 'base', gapRows, maxCountAgeDays)
+    const gapRows = buildBackboneGapRows(db, { limit, maxCountAgeDays, maxFeedbackTargetAgeDays })
+    const gaps = buildBackboneGapSummary(db, 'base', gapRows, maxCountAgeDays, maxFeedbackTargetAgeDays)
     const nextActions = buildTrustActionRows(auditChecks, gapRows, limit)
     const maintenanceSummary: MaintenanceSummary = {
       snapshot: {
@@ -1016,11 +1020,12 @@ export const backboneGaps = async (args: string[], context: CommandContext): Pro
   const options = parseOptions(args)
   const limit = options.limit ?? 12
   const maxCountAgeDays = options.maxCountAgeDays ?? 45
+  const maxFeedbackTargetAgeDays = options.maxFeedbackTargetAgeDays ?? defaultFeedbackTargetAgeDays
   context.terminal.title('Backbone data gaps')
 
   await withBackboneTargetDb(context, options, (db, target) => {
-    const rows = buildBackboneGapRows(db, { limit, maxCountAgeDays })
-    const summary = buildBackboneGapSummary(db, target, rows, maxCountAgeDays)
+    const rows = buildBackboneGapRows(db, { limit, maxCountAgeDays, maxFeedbackTargetAgeDays })
+    const summary = buildBackboneGapSummary(db, target, rows, maxCountAgeDays, maxFeedbackTargetAgeDays)
     context.terminal.dump(summary)
 
     if (rows.length === 0) {
@@ -1108,10 +1113,11 @@ export const backboneAudit = async (args: string[], context: CommandContext): Pr
   const maxAgeMinutes = options.maxAgeMinutes ?? 60
   const maxRunAgeMinutes = options.maxRunAgeMinutes ?? maxAgeMinutes
   const maxCountAgeDays = options.maxCountAgeDays ?? 45
+  const maxFeedbackTargetAgeDays = options.maxFeedbackTargetAgeDays ?? defaultFeedbackTargetAgeDays
   context.terminal.title('Backbone audit')
 
   await withBackendDb(context.config, async (db: any) => {
-    const checks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays })
+    const checks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays, maxFeedbackTargetAgeDays })
     context.terminal.table(checks)
 
     const failures = checks.filter((check) => check.status === 'fail')
@@ -1136,14 +1142,15 @@ export const backboneTrust = async (args: string[], context: CommandContext): Pr
   const maxAgeMinutes = options.maxAgeMinutes ?? 60
   const maxRunAgeMinutes = options.maxRunAgeMinutes ?? maxAgeMinutes
   const maxCountAgeDays = options.maxCountAgeDays ?? 45
+  const maxFeedbackTargetAgeDays = options.maxFeedbackTargetAgeDays ?? defaultFeedbackTargetAgeDays
   context.terminal.title('Backbone trust report')
 
   await withBackendDb(context.config, async (db: any) => {
-    const auditChecks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays })
+    const auditChecks = buildBackboneAudit(db, { maxAgeMinutes, maxRunAgeMinutes, maxCountAgeDays, maxFeedbackTargetAgeDays })
     const failures = auditChecks.filter((check) => check.status === 'fail')
     const warnings = auditChecks.filter((check) => check.status === 'warn')
-    const gapRows = buildBackboneGapRows(db, { limit, maxCountAgeDays })
-    const gapSummary = buildBackboneGapSummary(db, 'base', gapRows, maxCountAgeDays)
+    const gapRows = buildBackboneGapRows(db, { limit, maxCountAgeDays, maxFeedbackTargetAgeDays })
+    const gapSummary = buildBackboneGapSummary(db, 'base', gapRows, maxCountAgeDays, maxFeedbackTargetAgeDays)
     const predictionRisk = buildPredictionTrustSummary(db)
     const learningDrift = buildLearningDriftSummary(db, 'base', {
       minSamples: 3,
@@ -1753,6 +1760,7 @@ const buildScheduledMaintenanceArgs = (options: ParsedOptions): string[] => {
   if (options.maxAgeMinutes !== undefined) args.push('--max-age-minutes', String(options.maxAgeMinutes))
   if (options.maxRunAgeMinutes !== undefined) args.push('--max-run-age-minutes', String(options.maxRunAgeMinutes))
   if (options.maxCountAgeDays !== undefined) args.push('--max-count-age-days', String(options.maxCountAgeDays))
+  if (options.maxFeedbackTargetAgeDays !== undefined) args.push('--max-feedback-target-age-days', String(options.maxFeedbackTargetAgeDays))
   if (options.limit !== undefined) args.push('--limit', String(options.limit))
   return args
 }
@@ -2193,6 +2201,7 @@ const buildBackboneGapSummary = (
   target: string,
   rows: Array<Record<string, unknown>>,
   maxCountAgeDays: number,
+  maxFeedbackTargetAgeDays: number,
 ): BackboneGapSummary => {
   const intake = buildToastIntakeSummary(db, target)
   const latestCount = db
@@ -2215,7 +2224,7 @@ const buildBackboneGapSummary = (
     low: rows.filter((row) => row.priority === 'low').length,
     toastRecipeCoveragePct: intake.recipeCoveragePct,
     staleCountSkus: countStaleCountSkus(db, maxCountAgeDays),
-    unscoredCountEvents: unscoredCountFeedback(db, { maxTargetAgeDays: 14, limit: 1_000 }).length,
+    unscoredCountEvents: unscoredCountFeedback(db, { maxTargetAgeDays: maxFeedbackTargetAgeDays, limit: 1_000 }).length,
     missingVendorCostSkus: countMissingVendorCostSkus(db),
     uncalibratedRiskPredictions: buildUngroundedRiskRows(db, 1_000).length,
     latestToastDocument: intake.latestToastDocument,
@@ -2226,7 +2235,7 @@ const buildBackboneGapSummary = (
 
 const buildBackboneGapRows = (
   db: Db,
-  input: { limit: number; maxCountAgeDays: number },
+  input: { limit: number; maxCountAgeDays: number; maxFeedbackTargetAgeDays: number },
 ): Array<Record<string, unknown>> => {
   const rows: Array<Record<string, unknown>> = []
   const recipeSuggestions = suggestToastRecipeMappings(db, input.limit)
@@ -2243,7 +2252,7 @@ const buildBackboneGapRows = (
   }
 
   rows.push(...buildStaleCountGapRows(db, input.maxCountAgeDays, input.limit))
-  rows.push(...buildUnscoredCountGapRows(db, input.limit))
+  rows.push(...buildUnscoredCountGapRows(db, input.limit, input.maxFeedbackTargetAgeDays))
   rows.push(...buildMissingVendorCostGapRows(db, input.limit))
   rows.push(...buildUngroundedRiskRows(db, input.limit).map((row) => ({
     priority: riskGapPriority(String(row.risk)),
@@ -2336,8 +2345,8 @@ const buildStaleCountGapRows = (
     })
 }
 
-const buildUnscoredCountGapRows = (db: Db, limit: number): Array<Record<string, unknown>> =>
-  unscoredCountFeedback(db, { limit }).map((row) => ({
+const buildUnscoredCountGapRows = (db: Db, limit: number, maxFeedbackTargetAgeDays: number): Array<Record<string, unknown>> =>
+  unscoredCountFeedback(db, { limit, maxTargetAgeDays: maxFeedbackTargetAgeDays }).map((row) => ({
     priority: row.reason === 'stale_prediction_target' ? 'high' : 'medium',
     gap: 'restore prediction cadence',
     target: row.skuName,
@@ -2600,6 +2609,7 @@ export const backboneListen = async (args: string[], context: CommandContext): P
           asOf: options.asOf,
           horizonDays: options.horizonDays,
           usageWindowDays: options.usageWindowDays,
+          maxFeedbackTargetAgeDays: options.maxFeedbackTargetAgeDays,
           mode: 'live',
         })
         finishListenerCycle(db, cycleId, {
@@ -3474,7 +3484,7 @@ const persistMaintenanceRun = (
 
 const buildBackboneAudit = (
   db: any,
-  options: { maxAgeMinutes: number; maxRunAgeMinutes: number; maxCountAgeDays: number },
+  options: { maxAgeMinutes: number; maxRunAgeMinutes: number; maxCountAgeDays: number; maxFeedbackTargetAgeDays: number },
 ): AuditCheck[] => {
   const latestRun = db
     .prepare(
@@ -3518,7 +3528,7 @@ const buildBackboneAudit = (
   const predictionCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_predictions').get()?.count)
   const feedbackCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback').get()?.count)
   const calibrationCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
-  const unscoredCounts = unscoredCountFeedback(db, { maxTargetAgeDays: 14, limit: 1_000 })
+  const unscoredCounts = unscoredCountFeedback(db, { maxTargetAgeDays: options.maxFeedbackTargetAgeDays, limit: 1_000 })
   const learningDrift = buildLearningDriftSummary(db, 'base', {
     minSamples: 3,
     maxBottleMae: 0.25,
@@ -3657,7 +3667,7 @@ const buildBackboneAudit = (
     status: unscoredCounts.length === 0 ? 'pass' : 'warn',
     detail: unscoredCounts.length === 0
       ? 'all eligible sparse counts have scored feedback'
-      : `${unscoredCounts.length} count event${unscoredCounts.length === 1 ? '' : 's'} could not score; run Backbone to restore prediction cadence`,
+      : `${unscoredCounts.length} count event${unscoredCounts.length === 1 ? '' : 's'} could not score within ${options.maxFeedbackTargetAgeDays}d prediction target window; run Backbone to restore prediction cadence`,
   })
   checks.push({
     check: 'feedback band coverage',
@@ -4075,6 +4085,9 @@ const parseOptions = (args: string[]): ParsedOptions => {
       index += 1
     } else if (arg === '--max-feedback-age-days' && next) {
       parsed.maxFeedbackAgeDays = nonNegativeNumber(next, '--max-feedback-age-days')
+      index += 1
+    } else if (arg === '--max-feedback-target-age-days' && next) {
+      parsed.maxFeedbackTargetAgeDays = nonNegativeNumber(next, '--max-feedback-target-age-days')
       index += 1
     } else if (arg === '--max-bottle-mae' && next) {
       parsed.maxBottleMae = nonNegativeDecimal(next, '--max-bottle-mae')
