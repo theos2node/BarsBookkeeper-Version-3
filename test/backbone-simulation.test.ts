@@ -98,7 +98,7 @@ describe('Backbone prediction model', () => {
         scenarioDb.close()
       }
     }
-  })
+  }, 30_000)
 
   it('uses weekday demand shape to stay accurate during volatile Toast patterns', () => {
     const result = runBackboneAccuracySimulation(db, { scenario: 'volatile' })

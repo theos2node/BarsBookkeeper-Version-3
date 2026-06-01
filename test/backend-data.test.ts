@@ -350,6 +350,84 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(item?.estimatedCost).toBeGreaterThan(0)
   })
 
+  it('chooses order vendors from invoice-observed prices as of the order time', () => {
+    const skuId = ensureSku(db, { name: 'Timeline Gin 1L', unit: 'ml', category: 'liquor', parLevel: 4000 })
+    const steadyVendor = ensureVendor(db, 'Steady Gin Vendor')
+    const futureDiscountVendor = ensureVendor(db, 'Future Discount Gin Vendor')
+    ensureVendorItem(db, {
+      vendorId: steadyVendor,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 20,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    ensureVendorItem(db, {
+      vendorId: futureDiscountVendor,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 50,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    const menuItemId = ensureMenuItem(db, 'Timeline Gin Fizz', 'timeline-gin-fizz', 'cocktails')
+    upsertRecipeItem(db, { menuItemId, skuId, quantity: 100, unit: 'ml' })
+    ingestInvoices(db, [
+      {
+        vendor: 'Steady Gin Vendor',
+        invoiceNumber: 'TIMELINE-GIN-STEADY-OLD',
+        invoiceDate: '2026-05-01T09:00:00.000Z',
+        sku: 'Timeline Gin 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.02,
+        category: 'liquor',
+      },
+      {
+        vendor: 'Future Discount Gin Vendor',
+        invoiceNumber: 'TIMELINE-GIN-DISCOUNT-OLD',
+        invoiceDate: '2026-05-01T09:00:00.000Z',
+        sku: 'Timeline Gin 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.05,
+        category: 'liquor',
+      },
+      {
+        vendor: 'Future Discount Gin Vendor',
+        invoiceNumber: 'TIMELINE-GIN-DISCOUNT-FUTURE',
+        invoiceDate: '2026-05-20T09:00:00.000Z',
+        sku: 'Timeline Gin 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.01,
+        category: 'liquor',
+      },
+    ])
+    ingestToastSales(db, [
+      { externalId: 'TIMELINE-GIN-SALE-1', occurredAt: '2026-05-09T21:00:00.000Z', menuItem: 'Timeline Gin Fizz', quantitySold: 6 },
+      { externalId: 'TIMELINE-GIN-SALE-2', occurredAt: '2026-05-10T21:00:00.000Z', menuItem: 'Timeline Gin Fizz', quantitySold: 6 },
+    ])
+
+    const beforeFutureInvoice = generateVendorGroupedOrderRecommendations(db, {
+      asOf: '2026-05-12T00:00:00.000Z',
+      horizonDays: 7,
+      usageWindowDays: 30,
+    }).flatMap((group) => group.items).find((row) => row.skuName === 'Timeline Gin 1L')
+    const afterFutureInvoice = generateVendorGroupedOrderRecommendations(db, {
+      asOf: '2026-05-21T00:00:00.000Z',
+      horizonDays: 7,
+      usageWindowDays: 30,
+    }).flatMap((group) => group.items).find((row) => row.skuName === 'Timeline Gin 1L')
+
+    expect(beforeFutureInvoice?.vendorName).toBe('Steady Gin Vendor')
+    expect(beforeFutureInvoice?.estimatedCost).toBeGreaterThan(0)
+    expect(afterFutureInvoice?.vendorName).toBe('Future Discount Gin Vendor')
+    expect(afterFutureInvoice?.estimatedCost).toBeLessThan(beforeFutureInvoice?.estimatedCost ?? 0)
+  })
+
   it('regenerates orders idempotently for the same forecast window', () => {
     seedDemoData(db, asOf)
 
