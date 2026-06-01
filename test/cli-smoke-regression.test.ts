@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase, toNumber, type Db } from '../src/db/database.js'
+import { createInventoryEvent, ensureSku } from '../src/db/repositories.js'
 
 const execFileAsync = promisify(execFile)
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -544,6 +545,30 @@ process.exit(1)
     expect(blocked.code).toBe(1)
     expect(blocked.output).toContain('backbone_listener_lock_held:active-owner')
   }, 60_000)
+
+  it('does not treat manual corrections as terminal sparse-count grounding', async () => {
+    await expectCliOk(['setup'], dataDir)
+
+    const correctionDb = openDatabase(join(dataDir, 'barsbookkeeper.sqlite'))
+    try {
+      const skuId = ensureSku(correctionDb, { name: 'Manual Correction Vodka 1L', unit: 'ml', category: 'liquor' })
+      createInventoryEvent(correctionDb, {
+        skuId,
+        eventType: 'adjustment',
+        quantity: 1000,
+        unit: 'ml',
+        occurredAt: new Date().toISOString(),
+        note: 'Opening correction without count evidence',
+      })
+    } finally {
+      correctionDb.close()
+    }
+
+    const gaps = await expectCliOk(['backbone', 'gaps', '--limit', '5', '--max-count-age-days', '30'], dataDir)
+    expect(gaps).toContain('refresh sparse count')
+    expect(gaps).toContain('Manual Correction Vodka 1L')
+    expect(gaps).toContain('no hand count yet')
+  }, 30_000)
 
   it('dry-runs and force-prunes isolated Backbone environments safely', async () => {
     await expectCliOk(['setup'], dataDir)

@@ -2196,7 +2196,12 @@ const buildBackboneGapSummary = (
 ): BackboneGapSummary => {
   const intake = buildToastIntakeSummary(db, target)
   const latestCount = db
-    .prepare("SELECT MAX(occurred_at) AS latest FROM inventory_events WHERE event_type = 'adjustment'")
+    .prepare(
+      `SELECT MAX(e.occurred_at) AS latest
+       FROM inventory_events e
+       WHERE e.event_type = 'adjustment'
+         AND ${countGroundingPredicate('e')}`,
+    )
     .get()
   const latestInvoice = db
     .prepare("SELECT MAX(occurred_at) AS latest FROM inventory_events WHERE event_type = 'purchase'")
@@ -2275,10 +2280,11 @@ const buildStaleCountGapRows = (
          LIMIT 1
        ),
        latest_counts AS (
-         SELECT sku_id, MAX(occurred_at) AS latest_count
-         FROM inventory_events
-         WHERE event_type = 'adjustment'
-         GROUP BY sku_id
+         SELECT e.sku_id, MAX(e.occurred_at) AS latest_count
+         FROM inventory_events e
+         WHERE e.event_type = 'adjustment'
+           AND ${countGroundingPredicate('e')}
+         GROUP BY e.sku_id
        )
        SELECT s.name AS sku,
               s.unit,
@@ -2373,6 +2379,21 @@ const buildMissingVendorCostGapRows = (db: Db, limit: number): Array<Record<stri
 
 const countStaleCountSkus = (db: Db, maxCountAgeDays: number): number =>
   buildStaleCountGapRows(db, maxCountAgeDays, 1_000).length
+
+const countGroundingPredicate = (eventAlias: string): string => `(
+  EXISTS (
+    SELECT 1
+    FROM evidence_items count_evidence
+    WHERE count_evidence.inventory_event_id = ${eventAlias}.id
+      AND count_evidence.evidence_type = 'inventory_count'
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM source_documents count_document
+    WHERE count_document.id = ${eventAlias}.source_document_id
+      AND count_document.document_type = 'count'
+  )
+)`
 
 const countMissingVendorCostSkus = (db: Db): number =>
   toNumber(
@@ -3477,10 +3498,11 @@ const buildBackboneAudit = (
   const countGrounding = db
     .prepare(
       `SELECT COUNT(*) AS count_events,
-              COUNT(DISTINCT sku_id) AS counted_skus,
-              MAX(occurred_at) AS latest_count_at
-       FROM inventory_events
-       WHERE event_type = 'adjustment'`,
+              COUNT(DISTINCT e.sku_id) AS counted_skus,
+              MAX(e.occurred_at) AS latest_count_at
+       FROM inventory_events e
+       WHERE e.event_type = 'adjustment'
+         AND ${countGroundingPredicate('e')}`,
     )
     .get()
   const failedCycles = toNumber(
