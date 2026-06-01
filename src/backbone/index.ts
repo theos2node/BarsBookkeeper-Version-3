@@ -46,6 +46,18 @@ export type BackboneRunResult = {
   predictions: BackbonePrediction[]
 }
 
+export type UnscoredCountFeedback = {
+  countEventId: number
+  skuId: number
+  skuName: string
+  unit: string
+  occurredAt: string
+  actualOnHand: number
+  latestTargetAt: string
+  targetAgeDays: number | null
+  reason: 'no_prediction_target' | 'stale_prediction_target'
+}
+
 type VendorCost = {
   vendorName: string
   unitCost: number | null
@@ -585,6 +597,65 @@ const stockoutProbabilityFor = (predictedOnHand: number, uncertainty: number): n
   if (predictedOnHand <= 0) return 0.98
   if (uncertainty <= 0 || predictedOnHand >= uncertainty) return 0.01
   return round(Math.max(0.01, Math.min(0.98, (uncertainty - predictedOnHand) / (2 * uncertainty))), 3)
+}
+
+export const unscoredCountFeedback = (db: Db, options: { asOf?: string; maxTargetAgeDays?: number; limit?: number } = {}): UnscoredCountFeedback[] => {
+  const asOf = options.asOf ?? new Date().toISOString()
+  const maxTargetAgeDays = Math.max(0, options.maxTargetAgeDays ?? 14)
+  const rows = db
+    .prepare(
+      `SELECT e.id AS count_event_id,
+              e.sku_id,
+              s.name AS sku_name,
+              s.unit,
+              e.occurred_at,
+              COALESCE(SUM(position.quantity), 0) AS actual_on_hand,
+              (
+                SELECT datetime(r.as_of, '+' || r.horizon_days || ' days')
+                FROM backbone_predictions p
+                JOIN backbone_runs r ON r.id = p.run_id
+                WHERE p.sku_id = e.sku_id
+                  AND r.status = 'completed'
+                  AND datetime(r.as_of, '+' || r.horizon_days || ' days') <= datetime(e.occurred_at)
+                ORDER BY datetime(r.as_of, '+' || r.horizon_days || ' days') DESC, p.id DESC
+                LIMIT 1
+              ) AS latest_target_at
+       FROM inventory_events e
+       JOIN skus s ON s.id = e.sku_id
+       JOIN inventory_events position
+         ON position.sku_id = e.sku_id
+        AND position.occurred_at <= e.occurred_at
+       WHERE e.event_type = 'adjustment'
+         AND e.occurred_at <= ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM backbone_feedback f
+           WHERE f.count_event_id = e.id
+         )
+       GROUP BY e.id
+       ORDER BY datetime(e.occurred_at) DESC, e.id DESC
+       LIMIT ?`,
+    )
+    .all(asOf, options.limit ?? 100)
+
+  return rows
+    .map((row: any): UnscoredCountFeedback => {
+      const occurredAt = toStringValue(row.occurred_at)
+      const latestTargetAt = toStringValue(row.latest_target_at)
+      const targetAgeDays = latestTargetAt ? daysBetween(occurredAt, latestTargetAt) : null
+      return {
+        countEventId: toNumber(row.count_event_id),
+        skuId: toNumber(row.sku_id),
+        skuName: toStringValue(row.sku_name),
+        unit: toStringValue(row.unit),
+        occurredAt,
+        actualOnHand: round(toNumber(row.actual_on_hand), 2),
+        latestTargetAt,
+        targetAgeDays: targetAgeDays === null ? null : round(targetAgeDays, 1),
+        reason: latestTargetAt && targetAgeDays !== null && targetAgeDays > maxTargetAgeDays ? 'stale_prediction_target' : 'no_prediction_target',
+      }
+    })
+    .filter((row) => row.reason === 'no_prediction_target' || (row.targetAgeDays ?? 0) > maxTargetAgeDays)
 }
 
 const recommendationFor = (db: Db, skuId: number): { quantity: number; estimatedCost: number | null } => {

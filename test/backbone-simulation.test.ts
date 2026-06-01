@@ -3,7 +3,7 @@ import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
 import { ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../src/db/repositories.js'
 import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
-import { getLatestBackboneRun, runBackboneModel, scoreBackboneFeedback } from '../src/backbone/index.js'
+import { getLatestBackboneRun, runBackboneModel, scoreBackboneFeedback, unscoredCountFeedback } from '../src/backbone/index.js'
 import { backboneSimulationScenarios, runBackboneAccuracySimulation, runBackboneRollingBacktest } from '../src/backbone/simulation.js'
 
 describe('Backbone prediction model', () => {
@@ -294,6 +294,15 @@ describe('Backbone prediction model', () => {
     ])
 
     expect(scoreBackboneFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toBe(0)
+    const unscored = unscoredCountFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })
+    expect(unscored).toEqual([
+      expect.objectContaining({
+        skuName: 'Stale Feedback Vodka 1L',
+        reason: 'stale_prediction_target',
+        targetAgeDays: expect.any(Number),
+      }),
+    ])
+    expect(unscored[0]?.targetAgeDays ?? 0).toBeGreaterThan(14)
     expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback WHERE sku_id = ?').get(skuId)?.count).toBe(0)
     expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations WHERE sku_id = ?').get(skuId)?.count).toBe(0)
 
@@ -306,6 +315,7 @@ describe('Backbone prediction model', () => {
 
     expect(scoreBackboneFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toBe(1)
     expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback WHERE sku_id = ?').get(skuId)?.count).toBe(1)
+    expect(unscoredCountFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toHaveLength(0)
   })
 
   it('uses vendor lead time when escalating low-stock risk', () => {

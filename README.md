@@ -116,7 +116,7 @@ Action, gap, and trust reports include command-ready next steps where possible, 
 
 `bbk backbone recipe-suggestions` turns repeated unmapped Toast sales into reviewable `toast map-recipe` candidates from known SKUs and existing recipe memory. It never mutates inventory by itself; apply a suggestion only after checking the quantity and SKU.
 
-`bbk backbone gaps` prioritizes the smallest missing inputs that would most improve the model: unmapped Toast recipes, stale or missing sparse counts, missing invoice/vendor costs, and risky predictions that still lack calibration memory.
+`bbk backbone gaps` prioritizes the smallest missing inputs that would most improve the model: unmapped Toast recipes, stale or missing sparse counts, hand counts that could not be scored because prediction cadence fell behind, missing invoice/vendor costs, and risky predictions that still lack calibration memory.
 
 When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit>`. The command stores the recipe ingredient, backfills prior unresolved Toast sale documents into inventory consumption, and suppresses the related missing-recipe review task once the backlog has been made usable.
 

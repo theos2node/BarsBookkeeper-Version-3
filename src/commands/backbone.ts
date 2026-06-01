@@ -4,7 +4,7 @@ import { hostname } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
-import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel } from '../backbone/index.js'
+import { ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel, unscoredCountFeedback } from '../backbone/index.js'
 import {
   backboneSimulationScenarios,
   runBackboneAccuracySimulation,
@@ -147,6 +147,7 @@ type BackboneGapSummary = {
   low: number
   toastRecipeCoveragePct: number
   staleCountSkus: number
+  unscoredCountEvents: number
   missingVendorCostSkus: number
   uncalibratedRiskPredictions: number
   latestToastDocument: string
@@ -2207,6 +2208,7 @@ const buildBackboneGapSummary = (
     low: rows.filter((row) => row.priority === 'low').length,
     toastRecipeCoveragePct: intake.recipeCoveragePct,
     staleCountSkus: countStaleCountSkus(db, maxCountAgeDays),
+    unscoredCountEvents: unscoredCountFeedback(db, { maxTargetAgeDays: 14, limit: 1_000 }).length,
     missingVendorCostSkus: countMissingVendorCostSkus(db),
     uncalibratedRiskPredictions: buildUngroundedRiskRows(db, 1_000).length,
     latestToastDocument: intake.latestToastDocument,
@@ -2234,6 +2236,7 @@ const buildBackboneGapRows = (
   }
 
   rows.push(...buildStaleCountGapRows(db, input.maxCountAgeDays, input.limit))
+  rows.push(...buildUnscoredCountGapRows(db, input.limit))
   rows.push(...buildMissingVendorCostGapRows(db, input.limit))
   rows.push(...buildUngroundedRiskRows(db, input.limit).map((row) => ({
     priority: riskGapPriority(String(row.risk)),
@@ -2324,6 +2327,17 @@ const buildStaleCountGapRows = (
       }
     })
 }
+
+const buildUnscoredCountGapRows = (db: Db, limit: number): Array<Record<string, unknown>> =>
+  unscoredCountFeedback(db, { limit }).map((row) => ({
+    priority: row.reason === 'stale_prediction_target' ? 'high' : 'medium',
+    gap: 'restore prediction cadence',
+    target: row.skuName,
+    detail: row.reason === 'stale_prediction_target'
+      ? `count ${row.occurredAt} has no recent prediction target; latest target ${row.latestTargetAt} was ${row.targetAgeDays}d old`
+      : `count ${row.occurredAt} has no completed prediction target to score`,
+    action: 'bbk backbone listen --once',
+  })).slice(0, limit)
 
 const buildMissingVendorCostGapRows = (db: Db, limit: number): Array<Record<string, unknown>> => {
   const rows = db
