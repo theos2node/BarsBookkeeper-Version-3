@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
-import { ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../src/db/repositories.js'
+import { createInventoryEvent, ensureMenuItem, ensureSku, ensureVendor, ensureVendorItem, upsertRecipeItem } from '../src/db/repositories.js'
 import { ingestCounts, ingestInvoices, ingestToastSales } from '../src/ingest/index.js'
 import { getLatestBackboneRun, runBackboneModel, scoreBackboneFeedback, unscoredCountFeedback } from '../src/backbone/index.js'
 import { backboneSimulationScenarios, runBackboneAccuracySimulation, runBackboneRollingBacktest } from '../src/backbone/simulation.js'
@@ -316,6 +316,71 @@ describe('Backbone prediction model', () => {
     expect(scoreBackboneFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toBe(1)
     expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback WHERE sku_id = ?').get(skuId)?.count).toBe(1)
     expect(unscoredCountFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toHaveLength(0)
+  })
+
+  it('calibrates only against evidence-backed count adjustments', () => {
+    const vendorId = ensureVendor(db, 'Grounded Count Distributor')
+    const skuId = ensureSku(db, { name: 'Grounded Count Vodka 1L', unit: 'ml', category: 'liquor' })
+    ensureVendorItem(db, {
+      vendorId,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 20,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    ingestInvoices(db, [
+      {
+        vendor: 'Grounded Count Distributor',
+        invoiceNumber: 'GROUNDED-COUNT-OPEN',
+        invoiceDate: '2026-01-01T09:00:00.000Z',
+        sku: 'Grounded Count Vodka 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.02,
+        category: 'liquor',
+      },
+    ])
+
+    runBackboneModel(db, {
+      asOf: '2026-01-01T12:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+    createInventoryEvent(db, {
+      skuId,
+      eventType: 'adjustment',
+      quantity: -200,
+      unit: 'ml',
+      occurredAt: '2026-01-02T12:00:00.000Z',
+      note: 'Manual shrink correction, not a hand count',
+    })
+
+    expect(scoreBackboneFeedback(db, { asOf: '2026-01-02T13:00:00.000Z' })).toBe(0)
+    expect(unscoredCountFeedback(db, { asOf: '2026-01-02T13:00:00.000Z' })).toHaveLength(0)
+    expect(db.prepare('SELECT COALESCE(SUM(quantity), 0) AS on_hand FROM inventory_events WHERE sku_id = ?').get(skuId)?.on_hand).toBe(800)
+
+    runBackboneModel(db, {
+      asOf: '2026-01-02T12:30:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+    ingestCounts(db, [
+      {
+        countId: 'GROUNDED-COUNT-HAND-COUNT',
+        occurredAt: '2026-01-03T12:30:00.000Z',
+        sku: 'Grounded Count Vodka 1L',
+        countedQuantity: 700,
+        unit: 'ml',
+      },
+    ])
+
+    expect(scoreBackboneFeedback(db, { asOf: '2026-01-03T13:00:00.000Z' })).toBe(1)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback WHERE sku_id = ?').get(skuId)?.count).toBe(1)
+    expect(unscoredCountFeedback(db, { asOf: '2026-01-03T13:00:00.000Z' })).toHaveLength(0)
   })
 
   it('uses vendor lead time when escalating low-stock risk', () => {

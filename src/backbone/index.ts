@@ -129,6 +129,21 @@ const bottleSize = (db: Db, skuId: number): number => {
 
 const calibrationHalfLifeDays = 45
 
+const countGroundingPredicate = (eventAlias: string): string => `(
+  EXISTS (
+    SELECT 1
+    FROM evidence_items count_evidence
+    WHERE count_evidence.inventory_event_id = ${eventAlias}.id
+      AND count_evidence.evidence_type = 'inventory_count'
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM source_documents count_document
+    WHERE count_document.id = ${eventAlias}.source_document_id
+      AND count_document.document_type = 'count'
+  )
+)`
+
 const recencyWeight = (evaluatedAt: string, latestEvaluatedAt: string): number => {
   const latestTime = new Date(latestEvaluatedAt).getTime()
   const evaluatedTime = new Date(evaluatedAt).getTime()
@@ -205,6 +220,7 @@ export const scoreBackboneFeedback = (db: Db, options: { asOf?: string; maxTarge
         AND position.occurred_at <= e.occurred_at
        WHERE e.event_type = 'adjustment'
          AND e.occurred_at <= ?
+         AND ${countGroundingPredicate('e')}
        GROUP BY e.id
        ORDER BY e.occurred_at`,
     )
@@ -409,6 +425,7 @@ const latestCountAgeDays = (db: Db, skuId: number, asOf: string): number | null 
        WHERE sku_id = ?
          AND event_type = 'adjustment'
          AND occurred_at <= ?
+         AND ${countGroundingPredicate('inventory_events')}
        ORDER BY occurred_at DESC, id DESC
        LIMIT 1`,
     )
@@ -627,6 +644,7 @@ export const unscoredCountFeedback = (db: Db, options: { asOf?: string; maxTarge
         AND position.occurred_at <= e.occurred_at
        WHERE e.event_type = 'adjustment'
          AND e.occurred_at <= ?
+         AND ${countGroundingPredicate('e')}
          AND NOT EXISTS (
            SELECT 1
            FROM backbone_feedback f

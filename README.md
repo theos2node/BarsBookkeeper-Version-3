@@ -118,6 +118,8 @@ Action, gap, and trust reports include command-ready next steps where possible, 
 
 `bbk backbone gaps` prioritizes the smallest missing inputs that would most improve the model: unmapped Toast recipes, stale or missing sparse counts, hand counts that could not be scored because prediction cadence fell behind, missing invoice/vendor costs, and risky predictions that still lack calibration memory.
 
+Backbone calibration only scores evidence-backed count adjustments from count documents or inventory-count evidence. Manual corrections still update inventory position, but they do not refresh count age or train prediction calibration unless they are tied to a real hand count.
+
 When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit>`. The command stores the recipe ingredient, backfills prior unresolved Toast sale documents into inventory consumption, and suppresses the related missing-recipe review task once the backlog has been made usable.
 
 Toast order intake flattens check selections and nested modifier selections into separate sale evidence rows with stable external IDs. Modifiers keep their parent menu item in the raw evidence and multiply by the parent quantity, so mapped add-ons or sides can contribute inventory usage instead of disappearing inside the parent order.
