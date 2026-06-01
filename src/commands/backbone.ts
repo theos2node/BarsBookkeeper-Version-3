@@ -634,6 +634,7 @@ export const backboneMaintainHistory = async (args: string[], context: CommandCo
           gaps: row.gap_count,
           recipeCoverage: summary?.gaps.toastRecipeCoveragePct ?? '',
           staleCounts: summary?.gaps.staleCountSkus ?? '',
+          unscoredCounts: summary?.gaps.unscoredCountEvents ?? '',
           missingCosts: summary?.gaps.missingVendorCostSkus ?? '',
           verification: summary?.verification?.status ?? '',
           topAction: summary?.nextActions?.[0]?.action ?? '',
@@ -1175,6 +1176,7 @@ export const backboneTrust = async (args: string[], context: CommandContext): Pr
       latestVerification: latestVerification.status,
       latestMaintenance: latestMaintenance.status,
       toastRecipeCoveragePct: gapSummary.toastRecipeCoveragePct,
+      unscoredCountEvents: gapSummary.unscoredCountEvents,
       latestCount: gapSummary.latestCount,
       latestInvoice: gapSummary.latestInvoice,
     })
@@ -3494,6 +3496,7 @@ const buildBackboneAudit = (
   const predictionCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_predictions').get()?.count)
   const feedbackCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback').get()?.count)
   const calibrationCount = toNumber(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations').get()?.count)
+  const unscoredCounts = unscoredCountFeedback(db, { maxTargetAgeDays: 14, limit: 1_000 })
   const learningDrift = buildLearningDriftSummary(db, 'base', {
     minSamples: 3,
     maxBottleMae: 0.25,
@@ -3626,6 +3629,13 @@ const buildBackboneAudit = (
     check: 'feedback learning',
     status: feedbackCount > 0 && calibrationCount > 0 ? 'pass' : 'warn',
     detail: `${feedbackCount} feedback item${feedbackCount === 1 ? '' : 's'}, ${calibrationCount} calibrated SKU${calibrationCount === 1 ? '' : 's'}`,
+  })
+  checks.push({
+    check: 'unscored count feedback',
+    status: unscoredCounts.length === 0 ? 'pass' : 'warn',
+    detail: unscoredCounts.length === 0
+      ? 'all eligible sparse counts have scored feedback'
+      : `${unscoredCounts.length} count event${unscoredCounts.length === 1 ? '' : 's'} could not score; run Backbone to restore prediction cadence`,
   })
   checks.push({
     check: 'feedback band coverage',
