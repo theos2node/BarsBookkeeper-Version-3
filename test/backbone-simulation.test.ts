@@ -253,6 +253,61 @@ describe('Backbone prediction model', () => {
     expect(calibration?.usage_adjustment_daily).toBeGreaterThan(40)
   })
 
+  it('does not calibrate sparse counts against stale prediction targets', () => {
+    const vendorId = ensureVendor(db, 'Stale Feedback Distributor')
+    const skuId = ensureSku(db, { name: 'Stale Feedback Vodka 1L', unit: 'ml', category: 'liquor' })
+    ensureVendorItem(db, {
+      vendorId,
+      skuId,
+      packSize: 1000,
+      packUnit: 'bottle',
+      price: 20,
+      leadTimeDays: 2,
+      minOrderQty: 1000,
+    })
+    ingestInvoices(db, [
+      {
+        vendor: 'Stale Feedback Distributor',
+        invoiceNumber: 'STALE-FEEDBACK-OPEN',
+        invoiceDate: '2026-01-01T09:00:00.000Z',
+        sku: 'Stale Feedback Vodka 1L',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.02,
+        category: 'liquor',
+      },
+    ])
+    runBackboneModel(db, {
+      asOf: '2026-01-01T12:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+    ingestCounts(db, [
+      {
+        countId: 'STALE-FEEDBACK-LATE-COUNT',
+        occurredAt: '2026-01-20T12:00:00.000Z',
+        sku: 'Stale Feedback Vodka 1L',
+        countedQuantity: 800,
+        unit: 'ml',
+      },
+    ])
+
+    expect(scoreBackboneFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toBe(0)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback WHERE sku_id = ?').get(skuId)?.count).toBe(0)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_calibrations WHERE sku_id = ?').get(skuId)?.count).toBe(0)
+
+    runBackboneModel(db, {
+      asOf: '2026-01-19T12:00:00.000Z',
+      horizonDays: 1,
+      usageWindowDays: 7,
+      mode: 'evaluation',
+    })
+
+    expect(scoreBackboneFeedback(db, { asOf: '2026-01-20T13:00:00.000Z' })).toBe(1)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM backbone_feedback WHERE sku_id = ?').get(skuId)?.count).toBe(1)
+  })
+
   it('uses vendor lead time when escalating low-stock risk', () => {
     const vendorId = ensureVendor(db, 'Slow Distributor')
     const skuId = ensureSku(db, { name: 'Slow Gin 1L', unit: 'ml', category: 'liquor' })

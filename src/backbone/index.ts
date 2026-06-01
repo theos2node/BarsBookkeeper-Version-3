@@ -178,8 +178,9 @@ const updateCalibrationForSku = (db: Db, skuId: number): void => {
   ).run(skuId, sampleCount, meanError, meanAbsError, meanBottleError, usageAdjustmentDaily, confidenceAdjustment)
 }
 
-export const scoreBackboneFeedback = (db: Db, options: { asOf?: string } = {}): number => {
+export const scoreBackboneFeedback = (db: Db, options: { asOf?: string; maxTargetAgeDays?: number } = {}): number => {
   const asOf = options.asOf ?? new Date().toISOString()
+  const maxTargetAgeDays = Math.max(0, options.maxTargetAgeDays ?? 14)
   const countRows = db
     .prepare(
       `SELECT e.id AS count_event_id,
@@ -203,6 +204,7 @@ export const scoreBackboneFeedback = (db: Db, options: { asOf?: string } = {}): 
     const skuId = toNumber(count.sku_id)
     const countEventId = toNumber(count.count_event_id)
     const occurredAt = toStringValue(count.occurred_at)
+    const oldestTargetAt = new Date(new Date(occurredAt).getTime() - maxTargetAgeDays * 24 * 60 * 60 * 1000).toISOString()
     const prediction = db
       .prepare(
         `SELECT p.id AS prediction_id,
@@ -218,6 +220,7 @@ export const scoreBackboneFeedback = (db: Db, options: { asOf?: string } = {}): 
          WHERE p.sku_id = ?
            AND r.status = 'completed'
            AND datetime(r.as_of, '+' || r.horizon_days || ' days') <= datetime(?)
+           AND datetime(r.as_of, '+' || r.horizon_days || ' days') >= datetime(?)
            AND NOT EXISTS (
              SELECT 1
              FROM backbone_feedback f
@@ -226,7 +229,7 @@ export const scoreBackboneFeedback = (db: Db, options: { asOf?: string } = {}): 
          ORDER BY datetime(r.as_of, '+' || r.horizon_days || ' days') DESC, p.id DESC
          LIMIT 1`,
       )
-      .get(skuId, occurredAt, countEventId)
+      .get(skuId, occurredAt, oldestTargetAt, countEventId)
     if (!prediction) continue
 
     const predictedOnHand = toNumber(prediction.predicted_on_hand)
