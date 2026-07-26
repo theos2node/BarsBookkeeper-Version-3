@@ -1,16 +1,31 @@
-import { mkdirSync } from 'node:fs'
+import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 export type Db = DatabaseSync
 
 export const openDatabase = (path = ':memory:'): Db => {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
+  if (path !== ':memory:') {
+    const directory = dirname(path)
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    if (process.platform !== 'win32') chmodSync(directory, 0o700)
+  }
 
   const db = new DatabaseSync(path)
+  if (path !== ':memory:' && process.platform !== 'win32') chmodSync(path, 0o600)
   db.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
+  `)
+  return db
+}
+
+export const openReadonlyDatabase = (path: string): Db => {
+  const db = new DatabaseSync(path, { readOnly: true })
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
   `)
   return db
 }
@@ -19,6 +34,20 @@ export const withTransaction = <T>(db: Db, work: () => T): T => {
   if (db.isTransaction) return work()
 
   db.exec('BEGIN')
+  try {
+    const result = work()
+    db.exec('COMMIT')
+    return result
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+export const withImmediateTransaction = <T>(db: Db, work: () => T): T => {
+  if (db.isTransaction) return work()
+
+  db.exec('BEGIN IMMEDIATE')
   try {
     const result = work()
     db.exec('COMMIT')

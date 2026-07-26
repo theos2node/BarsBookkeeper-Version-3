@@ -6,7 +6,17 @@ import {
   ensureVendor,
   type InventoryEventInput,
 } from '../db/repositories.js'
-import { lastInsertId, nowIso, parseJson, stringifyJson, toNumber, toStringValue, withTransaction, type Db } from '../db/database.js'
+import {
+  lastInsertId,
+  nowIso,
+  parseJson,
+  stringifyJson,
+  toNumber,
+  toStringValue,
+  withImmediateTransaction,
+  withTransaction,
+  type Db,
+} from '../db/database.js'
 
 export type OpenClawDecisionInput = {
   title: string
@@ -68,11 +78,16 @@ export const createDecision = (db: Db, input: OpenClawGenericDecisionInput): num
 }
 
 export const markDecisionApplied = (db: Db, decisionId: number, eventId: number): void => {
-  db.prepare(
-    `UPDATE openclaw_decisions
-     SET state = 'auto_applied', applied_inventory_event_id = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?`,
-  ).run(eventId, decisionId)
+  const result = db
+    .prepare(
+      `UPDATE openclaw_decisions
+       SET state = 'auto_applied', applied_inventory_event_id = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND applied_inventory_event_id IS NULL
+         AND state IN ('proposed', 'needs_review', 'auto_applied')`,
+    )
+    .run(eventId, decisionId)
+  if (toNumber(result.changes) === 0) throw new Error(`decision_apply_transition_conflict:${decisionId}`)
   db.prepare(
     `INSERT INTO audit_log (actor, action, entity_type, entity_id, after_json)
      VALUES (?, ?, ?, ?, ?)`,
@@ -126,9 +141,11 @@ export const applyDecision = (db: Db, input: OpenClawDecisionInput): number => {
 }
 
 export const reverseDecision = (db: Db, decisionId: number): number => {
-  return withTransaction(db, () => {
+  return withImmediateTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
     if (!decision) throw new Error(`decision_not_found:${decisionId}`)
+    const state = toStringValue(decision.state)
+    if (state !== 'auto_applied') throw new Error(`decision_not_reversible:${decisionId}:${state}`)
     const eventId = toNumber(decision.applied_inventory_event_id)
     if (!eventId) throw new Error(`decision_not_applied:${decisionId}`)
     const event = db.prepare('SELECT * FROM inventory_events WHERE id = ?').get(eventId)
@@ -140,15 +157,19 @@ export const reverseDecision = (db: Db, decisionId: number): number => {
       quantity: -toNumber(event.quantity),
       unit: toStringValue(event.unit, 'unit'),
       decisionId,
-      occurredAt: toStringValue(event.occurred_at, nowIso()),
+      occurredAt: nowIso(),
       note: `Reverse decision ${decisionId}`,
       reversedEventId: eventId,
     })
-    db.prepare(
-      `UPDATE openclaw_decisions
-       SET state = 'reversed', reversed_at = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-    ).run(nowIso(), decisionId)
+    const reversedAt = nowIso()
+    const transition = db
+      .prepare(
+        `UPDATE openclaw_decisions
+         SET state = 'reversed', reversed_at = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND state = 'auto_applied' AND reversed_at IS NULL`,
+      )
+      .run(reversedAt, decisionId)
+    if (toNumber(transition.changes) === 0) throw new Error(`decision_reverse_transition_conflict:${decisionId}`)
     db.prepare(
       `INSERT INTO audit_log (actor, action, entity_type, entity_id, before_json, after_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -158,17 +179,25 @@ export const reverseDecision = (db: Db, decisionId: number): number => {
 }
 
 export const dismissDecision = (db: Db, decisionId: number, reason = 'Dismissed after manager review'): number => {
-  return withTransaction(db, () => {
+  return withImmediateTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
     if (!decision) throw new Error(`decision_not_found:${decisionId}`)
-    if (toStringValue(decision.state) === 'auto_applied') {
+    const state = toStringValue(decision.state)
+    if (state === 'suppressed') return decisionId
+    if (state === 'reversed') throw new Error(`decision_not_dismissible:${decisionId}:reversed`)
+    if (state === 'auto_applied') {
       throw new Error(`decision_already_applied:${decisionId}`)
     }
-    db.prepare(
-      `UPDATE openclaw_decisions
-       SET state = 'suppressed', updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-    ).run(decisionId)
+    const transition = db
+      .prepare(
+        `UPDATE openclaw_decisions
+         SET state = 'suppressed', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND state IN ('proposed', 'needs_review')`,
+      )
+      .run(decisionId)
+    if (toNumber(transition.changes) === 0) {
+      throw new Error(`decision_dismiss_transition_conflict:${decisionId}`)
+    }
     db.prepare(
       `INSERT INTO audit_log (actor, action, entity_type, entity_id, before_json, after_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -184,8 +213,22 @@ export const dismissDecision = (db: Db, decisionId: number, reason = 'Dismissed 
   })
 }
 
+export const isInventoryMutationPayload = (payload: Record<string, unknown>): boolean => {
+  const eventType = toStringValue(payload.eventType)
+  const skuName = toStringValue(payload.skuName)
+  const quantity = toNumber(payload.quantity)
+  const knownEvent = ['purchase', 'sale', 'adjustment', 'shrink', 'correction'].includes(eventType)
+  const validDirection =
+    eventType === 'purchase'
+      ? quantity > 0
+      : eventType === 'sale' || eventType === 'shrink'
+        ? quantity < 0
+        : quantity !== 0
+  return Boolean(knownEvent && skuName && validDirection)
+}
+
 export const applyExistingDecision = (db: Db, decisionId: number): number => {
-  return withTransaction(db, () => {
+  return withImmediateTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
     if (!decision) throw new Error(`decision_not_found:${decisionId}`)
     const state = toStringValue(decision.state)
@@ -197,8 +240,10 @@ export const applyExistingDecision = (db: Db, decisionId: number): number => {
     const skuName = toStringValue(payload.skuName)
     const quantity = toNumber(payload.quantity)
     const unit = toStringValue(payload.unit, 'unit')
-    if (!eventType || !skuName || quantity === 0) {
-      throw new Error(`decision_has_no_inventory_mutation:${decisionId}`)
+    if (!isInventoryMutationPayload(payload)) {
+      throw new Error(
+        `decision_not_applicable:${decisionId}:review task has no inventory mutation; use bbk review dismiss ${decisionId} "<reason>" after resolving it`,
+      )
     }
 
     if (payload.vendorName) ensureVendor(db, toStringValue(payload.vendorName))
@@ -238,7 +283,15 @@ export const getReviewQueue = (db: Db) =>
       `SELECT id, title, risk_level, confidence, payload_json, evidence_json, created_at
        FROM openclaw_decisions
        WHERE state = 'needs_review'
-       ORDER BY risk_level DESC, created_at DESC`,
+       ORDER BY
+         CASE risk_level
+           WHEN 'critical' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'medium' THEN 2
+           WHEN 'low' THEN 3
+           ELSE 4
+         END,
+         created_at DESC`,
     )
     .all()
 

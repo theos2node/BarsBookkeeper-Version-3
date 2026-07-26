@@ -1,0 +1,25 @@
+[Unit]
+Description=Bars Bookkeeper Backbone listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=barsbookkeeper
+Group=barsbookkeeper
+WorkingDirectory=/opt/bars-bookkeeper
+Environment=BBK_DATA_DIR=/var/lib/bars-bookkeeper
+Environment=OPENCLAW_USE_CODEX=0
+EnvironmentFile=-/etc/bars-bookkeeper/bars-bookkeeper.env
+ExecStart=/usr/bin/node /opt/bars-bookkeeper/dist/cli/index.js backbone listen
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bars-bookkeeper
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

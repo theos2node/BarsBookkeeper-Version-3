@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { Db } from './database.js'
 
 type Migration = {
@@ -190,6 +191,341 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
     `,
   },
+  {
+    id: 2,
+    name: 'backbone_prediction_runs',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_environments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        db_path TEXT NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_run_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS backbone_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        environment_id INTEGER REFERENCES backbone_environments(id),
+        mode TEXT NOT NULL CHECK (mode IN ('live', 'simulation', 'evaluation')),
+        as_of TEXT NOT NULL,
+        horizon_days INTEGER NOT NULL,
+        usage_window_days INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        metrics_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS backbone_predictions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES backbone_runs(id) ON DELETE CASCADE,
+        sku_id INTEGER NOT NULL REFERENCES skus(id),
+        sku_name TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        on_hand REAL NOT NULL,
+        predicted_on_hand REAL NOT NULL,
+        predicted_days_remaining REAL,
+        avg_daily_usage REAL NOT NULL,
+        confidence REAL NOT NULL,
+        low_stock_risk TEXT NOT NULL CHECK (low_stock_risk IN ('ok', 'watch', 'low', 'high', 'critical')),
+        recommended_order_qty REAL NOT NULL DEFAULT 0,
+        estimated_cost REAL,
+        cost_signal TEXT NOT NULL DEFAULT 'none',
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (run_id, sku_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_runs_created ON backbone_runs(created_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_predictions_run_risk ON backbone_predictions(run_id, low_stock_risk);
+    `,
+  },
+  {
+    id: 3,
+    name: 'backbone_feedback_calibration',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        prediction_id INTEGER NOT NULL REFERENCES backbone_predictions(id) ON DELETE CASCADE,
+        run_id INTEGER NOT NULL REFERENCES backbone_runs(id) ON DELETE CASCADE,
+        sku_id INTEGER NOT NULL REFERENCES skus(id),
+        count_event_id INTEGER NOT NULL REFERENCES inventory_events(id),
+        predicted_on_hand REAL NOT NULL,
+        actual_on_hand REAL NOT NULL,
+        error_quantity REAL NOT NULL,
+        absolute_error_quantity REAL NOT NULL,
+        bottle_error REAL NOT NULL,
+        evaluated_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (prediction_id, count_event_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS backbone_calibrations (
+        sku_id INTEGER PRIMARY KEY REFERENCES skus(id),
+        sample_count INTEGER NOT NULL DEFAULT 0,
+        mean_error_quantity REAL NOT NULL DEFAULT 0,
+        mean_abs_error_quantity REAL NOT NULL DEFAULT 0,
+        mean_bottle_error REAL NOT NULL DEFAULT 0,
+        usage_adjustment_daily REAL NOT NULL DEFAULT 0,
+        confidence_adjustment REAL NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_feedback_sku ON backbone_feedback(sku_id, evaluated_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_feedback_run ON backbone_feedback(run_id);
+    `,
+  },
+  {
+    id: 4,
+    name: 'backbone_listener_health',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_listener_cycles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        toast_ok INTEGER NOT NULL DEFAULT 0,
+        toast_summary TEXT NOT NULL DEFAULT '',
+        toast_error TEXT,
+        review_items INTEGER NOT NULL DEFAULT 0,
+        backbone_run_id INTEGER REFERENCES backbone_runs(id),
+        prediction_count INTEGER NOT NULL DEFAULT 0,
+        low_stock_count INTEGER NOT NULL DEFAULT 0,
+        feedback_items INTEGER NOT NULL DEFAULT 0,
+        calibrated_skus INTEGER NOT NULL DEFAULT 0,
+        cost_cutting_options INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_listener_cycles_started ON backbone_listener_cycles(started_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_listener_cycles_status ON backbone_listener_cycles(status);
+    `,
+  },
+  {
+    id: 5,
+    name: 'backbone_toast_cursor',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_toast_cursor (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        last_start TEXT,
+        last_end TEXT,
+        last_source TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `,
+  },
+  {
+    id: 6,
+    name: 'backbone_verification_history',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL CHECK (status IN ('passed', 'failed')),
+        scenario_count INTEGER NOT NULL DEFAULT 0,
+        passed_scenarios INTEGER NOT NULL DEFAULT 0,
+        failed_scenarios INTEGER NOT NULL DEFAULT 0,
+        options_json TEXT NOT NULL DEFAULT '{}',
+        summary_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_verifications_completed ON backbone_verifications(completed_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_verifications_status ON backbone_verifications(status);
+    `,
+  },
+  {
+    id: 7,
+    name: 'backbone_runtime_locks',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_runtime_locks (
+        name TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_runtime_locks_expires ON backbone_runtime_locks(expires_at);
+    `,
+  },
+  {
+    id: 8,
+    name: 'backbone_maintenance_runs',
+    sql: `
+      CREATE TABLE IF NOT EXISTS backbone_maintenance_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL CHECK (status IN ('passed', 'warn', 'failed')),
+        snapshot_label TEXT,
+        snapshot_path TEXT,
+        manifest_path TEXT,
+        audit_failures INTEGER NOT NULL DEFAULT 0,
+        audit_warnings INTEGER NOT NULL DEFAULT 0,
+        gap_count INTEGER NOT NULL DEFAULT 0,
+        summary_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backbone_maintenance_runs_completed ON backbone_maintenance_runs(completed_at);
+      CREATE INDEX IF NOT EXISTS idx_backbone_maintenance_runs_status ON backbone_maintenance_runs(status);
+    `,
+  },
+  {
+    id: 9,
+    name: 'backbone_prediction_uncertainty',
+    sql: `
+      ALTER TABLE backbone_predictions ADD COLUMN predicted_lower_on_hand REAL;
+      ALTER TABLE backbone_predictions ADD COLUMN predicted_upper_on_hand REAL;
+      ALTER TABLE backbone_predictions ADD COLUMN stockout_probability REAL;
+    `,
+  },
+  {
+    id: 10,
+    name: 'backbone_feedback_uncertainty_coverage',
+    sql: `
+      ALTER TABLE backbone_feedback ADD COLUMN predicted_lower_on_hand REAL;
+      ALTER TABLE backbone_feedback ADD COLUMN predicted_upper_on_hand REAL;
+      ALTER TABLE backbone_feedback ADD COLUMN in_band INTEGER;
+      ALTER TABLE backbone_feedback ADD COLUMN stockout_probability REAL;
+    `,
+  },
+  {
+    id: 11,
+    name: 'vendor_item_price_observations',
+    sql: `
+      CREATE TABLE IF NOT EXISTS vendor_item_prices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vendor_item_id INTEGER NOT NULL REFERENCES vendor_items(id),
+        vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+        sku_id INTEGER NOT NULL REFERENCES skus(id),
+        observed_at TEXT NOT NULL,
+        pack_size REAL NOT NULL DEFAULT 1,
+        pack_unit TEXT NOT NULL,
+        price REAL,
+        unit_cost REAL,
+        source_document_id INTEGER REFERENCES source_documents(id),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (vendor_item_id, observed_at, source_document_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_vendor_item_prices_sku_time ON vendor_item_prices(sku_id, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_vendor_item_prices_vendor_item_time ON vendor_item_prices(vendor_item_id, observed_at);
+    `,
+  },
+  {
+    id: 12,
+    name: 'backfill_vendor_item_price_observations',
+    sql: `
+      INSERT OR IGNORE INTO vendor_item_prices
+        (vendor_item_id, vendor_id, sku_id, observed_at, pack_size, pack_unit, price, unit_cost, source_document_id)
+      WITH legacy_invoice_prices AS (
+        SELECT e.sku_id,
+               e.source_document_id,
+               e.occurred_at,
+               ABS(e.quantity) AS pack_size,
+               e.unit AS pack_unit,
+               e.unit_cost,
+               COALESCE(
+                 NULLIF(TRIM(json_extract(sd.raw_json, '$.vendor')), ''),
+                 NULLIF(TRIM(json_extract(sd.raw_json, '$.vendorName')), ''),
+                 NULLIF(TRIM(json_extract(sd.raw_json, '$.vendorname')), ''),
+                 NULLIF(TRIM(json_extract(sd.raw_json, '$.vendor_name')), ''),
+                 NULLIF(TRIM(json_extract(d.payload_json, '$.vendorName')), ''),
+                 NULLIF(TRIM(json_extract(d.payload_json, '$.vendorname')), ''),
+                 NULLIF(TRIM(json_extract(d.payload_json, '$.vendor_name')), '')
+               ) AS vendor_name
+        FROM inventory_events e
+        JOIN source_documents sd ON sd.id = e.source_document_id
+        LEFT JOIN openclaw_decisions d ON d.id = e.decision_id
+        WHERE e.event_type = 'purchase'
+          AND e.unit_cost IS NOT NULL
+          AND e.unit_cost > 0
+          AND e.quantity > 0
+          AND sd.document_type = 'invoice'
+      )
+      SELECT vi.id,
+             vi.vendor_id,
+             legacy.sku_id,
+             legacy.occurred_at,
+             legacy.pack_size,
+             legacy.pack_unit,
+             legacy.unit_cost * legacy.pack_size,
+             legacy.unit_cost,
+             legacy.source_document_id
+      FROM legacy_invoice_prices legacy
+      JOIN vendors v ON v.name = legacy.vendor_name
+      JOIN vendor_items vi ON vi.vendor_id = v.id AND vi.sku_id = legacy.sku_id
+      WHERE legacy.vendor_name IS NOT NULL;
+    `,
+  },
+  {
+    id: 13,
+    name: 'decision_transition_uniqueness',
+    sql: `
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_events_decision_apply_once
+        ON inventory_events(decision_id)
+        WHERE decision_id IS NOT NULL AND reversed_event_id IS NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_events_reversal_once
+        ON inventory_events(reversed_event_id)
+        WHERE reversed_event_id IS NOT NULL;
+    `,
+  },
+  {
+    id: 14,
+    name: 'toast_recipe_application_uniqueness',
+    sql: `
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_events_toast_recipe_once
+        ON inventory_events(source_document_id, sku_id, event_type)
+        WHERE source_document_id IS NOT NULL
+          AND event_type = 'sale'
+          AND reversed_event_id IS NULL;
+    `,
+  },
+  {
+    id: 15,
+    name: 'repair_legacy_invoice_pack_observations',
+    sql: `
+      UPDATE vendor_item_prices
+      SET pack_size = (
+            SELECT vi.pack_size
+            FROM vendor_items vi
+            WHERE vi.id = vendor_item_prices.vendor_item_id
+          ),
+          pack_unit = (
+            SELECT vi.pack_unit
+            FROM vendor_items vi
+            WHERE vi.id = vendor_item_prices.vendor_item_id
+          ),
+          price = unit_cost * (
+            SELECT vi.pack_size
+            FROM vendor_items vi
+            WHERE vi.id = vendor_item_prices.vendor_item_id
+          )
+      WHERE source_document_id IN (
+              SELECT sd.id
+              FROM source_documents sd
+              WHERE sd.document_type = 'invoice'
+                AND COALESCE(
+                  NULLIF(TRIM(json_extract(sd.raw_json, '$.packSize')), ''),
+                  NULLIF(TRIM(json_extract(sd.raw_json, '$.packsize')), ''),
+                  NULLIF(TRIM(json_extract(sd.raw_json, '$.pack_size')), '')
+                ) IS NULL
+            )
+        AND EXISTS (
+              SELECT 1
+              FROM vendor_items vi
+              WHERE vi.id = vendor_item_prices.vendor_item_id
+                AND vi.pack_size > 0
+            );
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {
@@ -197,18 +533,42 @@ export const migrateDatabase = (db: Db): void => {
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
+      checksum TEXT,
       applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `)
+  const migrationColumns = db
+    .prepare('PRAGMA table_info(schema_migrations)')
+    .all()
+    .map((row) => String(row.name))
+  if (!migrationColumns.includes('checksum')) {
+    db.exec('ALTER TABLE schema_migrations ADD COLUMN checksum TEXT')
+  }
 
   for (const migration of migrations) {
-    const existing = db.prepare('SELECT id FROM schema_migrations WHERE id = ?').get(migration.id)
-    if (existing) continue
+    const checksum = createHash('sha256').update(migration.sql).digest('hex')
+    const existing = db
+      .prepare('SELECT id, name, checksum FROM schema_migrations WHERE id = ?')
+      .get(migration.id)
+    if (existing) {
+      if (String(existing.name) !== migration.name) {
+        throw new Error(`migration_name_mismatch:${migration.id}`)
+      }
+      if (existing.checksum && String(existing.checksum) !== checksum) {
+        throw new Error(`migration_checksum_mismatch:${migration.id}`)
+      }
+      if (!existing.checksum) {
+        db.prepare('UPDATE schema_migrations SET checksum = ? WHERE id = ?').run(checksum, migration.id)
+      }
+      continue
+    }
 
     db.exec('BEGIN')
     try {
       db.exec(migration.sql)
-      db.prepare('INSERT INTO schema_migrations (id, name) VALUES (?, ?)').run(migration.id, migration.name)
+      db
+        .prepare('INSERT INTO schema_migrations (id, name, checksum) VALUES (?, ?, ?)')
+        .run(migration.id, migration.name, checksum)
       db.exec('COMMIT')
     } catch (error) {
       db.exec('ROLLBACK')

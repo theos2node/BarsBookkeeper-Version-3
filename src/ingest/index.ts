@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto'
 import { createDecision, markDecisionApplied } from '../brain/decisions.js'
-import { toNumber, withTransaction, type Db } from '../db/database.js'
+import { parseIsoInstant } from '../core/clock.js'
+import { contentDerivedId, contentDigest } from '../core/stable-id.js'
+import { toNumber, withImmediateTransaction, type Db } from '../db/database.js'
 import {
   beginIngestRun,
   createEvidenceItem,
@@ -35,6 +36,8 @@ export type InvoiceRow = {
   unit?: string
   unitCost?: string | number
   totalCost?: string | number
+  packSize?: string | number
+  packUnit?: string
   category?: string
 }
 
@@ -55,11 +58,11 @@ export type ToastSalesRow = {
   occurredAt?: string
   menuItem?: string
   menuItemName?: string
+  parentMenuItemName?: string
+  selectionRole?: string
   quantitySold?: string | number
   quantity?: string | number
 }
-
-const digest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
 const rowText = (row: unknown): string => JSON.stringify(row)
 
@@ -71,46 +74,152 @@ const value = (...candidates: unknown[]): string => {
   return ''
 }
 
-const hasSourceDocument = (db: Db, sourceId: number, externalId: string, documentType: string): boolean =>
+const fieldValue = (row: Record<string, unknown>, ...keys: string[]): string => value(...keys.map((key) => row[key]))
+
+const fieldNumber = (row: Record<string, unknown>, keys: string[], fallback?: number): number | null => {
+  for (const key of keys) {
+    const candidate = row[key]
+    if (candidate !== null && candidate !== undefined && candidate !== '') {
+      const parsed = typeof candidate === 'number' ? candidate : Number(candidate)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+  }
+  return fallback ?? null
+}
+
+const fieldInstant = (row: Record<string, unknown>, keys: string[], fallback: string): string | null => {
+  const raw = fieldValue(row, ...keys)
+  if (!raw) return fallback
+  try {
+    return parseIsoInstant(raw, keys[0] ?? 'timestamp')
+  } catch {
+    return null
+  }
+}
+
+const validName = (value: string, maxLength = 240): boolean => value.length > 0 && value.length <= maxLength
+
+type SourceLineIdentity = {
+  externalId: string
+  legacyExternalId: string | null
+  digest: string
+}
+
+const sourceLineIdentities = (
+  rows: Array<Record<string, unknown>>,
+  kind: string,
+  externalKeys: string[],
+): SourceLineIdentity[] => {
+  const occurrences = new Map<string, number>()
+  return rows.map((row) => {
+    const legacyExternalId = fieldValue(row, ...externalKeys) || null
+    const digest = contentDigest(row)
+    if (!legacyExternalId) {
+      return {
+        externalId: contentDerivedId(kind, row),
+        legacyExternalId: null,
+        digest,
+      }
+    }
+
+    const lineKey = `${legacyExternalId}:${digest}`
+    const occurrence = (occurrences.get(lineKey) ?? 0) + 1
+    occurrences.set(lineKey, occurrence)
+    return {
+      externalId: `${legacyExternalId}:line-${digest.slice(0, 16)}:${occurrence}`,
+      legacyExternalId,
+      digest,
+    }
+  })
+}
+
+const hasSourceDocument = (
+  db: Db,
+  sourceId: number,
+  identity: SourceLineIdentity,
+  documentType: string,
+): boolean =>
   Boolean(
     db
-      .prepare('SELECT id FROM source_documents WHERE source_id = ? AND external_id = ? AND document_type = ? LIMIT 1')
-      .get(sourceId, externalId, documentType),
+      .prepare(
+        `SELECT id
+         FROM source_documents
+         WHERE source_id = ?
+           AND document_type = ?
+           AND (
+             external_id = ?
+             OR (external_id = ? AND content_hash = ?)
+           )
+         LIMIT 1`,
+      )
+      .get(sourceId, documentType, identity.externalId, identity.legacyExternalId, identity.digest),
   )
 
 export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName = 'Invoices'): IngestResult => {
   const rows = parseJsonOrCsv<InvoiceRow>(input)
   const sourceId = ensureSource(db, sourceName, 'invoice')
   const runId = beginIngestRun(db, sourceId)
+  const runAt = new Date().toISOString()
+  const identities = sourceLineIdentities(
+    rows as Array<Record<string, unknown>>,
+    'invoice',
+    ['invoiceNumber', 'invoicenumber', 'invoice_number'],
+  )
   let imported = 0
   let errors = 0
 
   try {
-    withTransaction(db, () => {
+    withImmediateTransaction(db, () => {
       rows.forEach((row, index) => {
-        const vendorName = value(row.vendor, row.vendorName)
-        const skuName = value(row.sku, row.skuName)
-        const quantity = toNumber(row.quantity)
-        const unit = value(row.unit) || 'unit'
-        const occurredAt = value(row.invoiceDate) || new Date().toISOString()
-        if (!vendorName || !skuName || quantity <= 0) {
+        const sourceRow = row as Record<string, unknown>
+        const vendorName = fieldValue(sourceRow, 'vendor', 'vendorName', 'vendorname', 'vendor_name')
+        const skuName = fieldValue(sourceRow, 'sku', 'skuName', 'skuname', 'sku_name')
+        const quantity = fieldNumber(sourceRow, ['quantity'])
+        const unit = fieldValue(sourceRow, 'unit') || 'unit'
+        const occurredAt = fieldInstant(sourceRow, ['invoiceDate', 'invoicedate', 'invoice_date'], runAt)
+        if (!validName(vendorName) || !validName(skuName) || !validName(unit, 64) || quantity === null || quantity <= 0 || occurredAt === null) {
           errors += 1
           return
         }
 
-        const unitCost = toNumber(row.unitCost, row.totalCost ? toNumber(row.totalCost) / quantity : 0)
-        const externalId = value(row.invoiceNumber) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
-        if (hasSourceDocument(db, sourceId, externalId, 'invoice')) return
+        const totalCost = fieldNumber(sourceRow, ['totalCost', 'totalcost', 'total_cost'], 0)
+        const unitCost = fieldNumber(
+          sourceRow,
+          ['unitCost', 'unitcost', 'unit_cost'],
+          totalCost !== null && totalCost > 0 ? totalCost / quantity : 0,
+        )
+        if (totalCost === null || totalCost < 0 || unitCost === null || unitCost < 0) {
+          errors += 1
+          return
+        }
+        const packSizeText = fieldValue(sourceRow, 'packSize', 'packsize', 'pack_size')
+        const explicitPackSize = fieldNumber(sourceRow, ['packSize', 'packsize', 'pack_size'])
+        const explicitPackUnit = fieldValue(sourceRow, 'packUnit', 'packunit', 'pack_unit')
+        if (
+          (packSizeText && (explicitPackSize === null || explicitPackSize <= 0)) ||
+          (explicitPackUnit && !validName(explicitPackUnit, 64))
+        ) {
+          errors += 1
+          return
+        }
+        const identity = identities[index]
+        if (!identity || hasSourceDocument(db, sourceId, identity, 'invoice')) return
+        const externalId = identity.externalId
 
         const vendorId = ensureVendor(db, vendorName)
         const skuId = ensureSku(db, { name: skuName, unit, category: value(row.category) || null })
-        ensureVendorItem(db, {
+        const vendorItemId = ensureVendorItem(db, {
           vendorId,
           skuId,
-          packSize: quantity,
-          packUnit: unit,
-          price: unitCost > 0 ? unitCost * quantity : null,
+          packSize: explicitPackSize,
+          packUnit: explicitPackSize ? explicitPackUnit || unit : null,
+          price: explicitPackSize && unitCost > 0 ? unitCost * explicitPackSize : null,
         })
+        const vendorItem = db
+          .prepare('SELECT pack_size, pack_unit FROM vendor_items WHERE id = ?')
+          .get(vendorItemId)
+        const observedPackSize = Math.max(1, toNumber(vendorItem?.pack_size, 1))
+        const observedPackUnit = value(vendorItem?.pack_unit) || unit
 
         const documentId = createSourceDocument(db, {
           sourceId,
@@ -119,8 +228,25 @@ export const ingestInvoices = (db: Db, input: string | InvoiceRow[], sourceName 
           documentDate: occurredAt,
           rawText: rowText(row),
           rawJson: row,
-          contentHash: digest(row),
+          contentHash: identity.digest,
         })
+        if (unitCost > 0) {
+          db.prepare(
+            `INSERT OR IGNORE INTO vendor_item_prices
+             (vendor_item_id, vendor_id, sku_id, observed_at, pack_size, pack_unit, price, unit_cost, source_document_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            vendorItemId,
+            vendorId,
+            skuId,
+            occurredAt,
+            observedPackSize,
+            observedPackUnit,
+            unitCost * observedPackSize,
+            unitCost,
+            documentId,
+          )
+        }
         const decisionId = createDecision(db, {
           title: `Apply invoice line ${externalId}: ${skuName}`,
           payload: {
@@ -180,17 +306,39 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
   const rows = parseJsonOrCsv<CountRow>(input)
   const sourceId = ensureSource(db, sourceName, 'count')
   const runId = beginIngestRun(db, sourceId)
+  const runAt = new Date().toISOString()
+  const identities = sourceLineIdentities(
+    rows as Array<Record<string, unknown>>,
+    'count',
+    ['countId', 'countid', 'count_id'],
+  )
   let imported = 0
   let errors = 0
 
   try {
-    withTransaction(db, () => {
+    withImmediateTransaction(db, () => {
       rows.forEach((row, index) => {
-        const skuName = value(row.sku, row.skuName)
-        const countedQuantity = toNumber(row.countedQuantity, toNumber(row.quantity))
-        const unit = value(row.unit) || 'unit'
-        const occurredAt = value(row.countedAt, row.occurredAt) || new Date().toISOString()
-        if (!skuName) {
+        const sourceRow = row as Record<string, unknown>
+        const skuName = fieldValue(sourceRow, 'sku', 'skuName', 'skuname', 'sku_name')
+        const quantity = fieldNumber(sourceRow, ['quantity'])
+        const countedQuantity = fieldNumber(
+          sourceRow,
+          ['countedQuantity', 'countedquantity', 'counted_quantity'],
+          quantity ?? undefined,
+        )
+        const unit = fieldValue(sourceRow, 'unit') || 'unit'
+        const occurredAt = fieldInstant(
+          sourceRow,
+          ['countedAt', 'countedat', 'counted_at', 'occurredAt', 'occurredat', 'occurred_at'],
+          runAt,
+        )
+        if (
+          !validName(skuName) ||
+          !validName(unit, 64) ||
+          countedQuantity === null ||
+          countedQuantity < 0 ||
+          occurredAt === null
+        ) {
           errors += 1
           return
         }
@@ -198,8 +346,9 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
         const skuId = ensureSku(db, { name: skuName, unit })
         const before = getOnHand(db, skuId, occurredAt)
         const delta = countedQuantity - before
-        const externalId = value(row.countId) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
-        if (hasSourceDocument(db, sourceId, externalId, 'count')) return
+        const identity = identities[index]
+        if (!identity || hasSourceDocument(db, sourceId, identity, 'count')) return
+        const externalId = identity.externalId
 
         const documentId = createSourceDocument(db, {
           sourceId,
@@ -208,7 +357,7 @@ export const ingestCounts = (db: Db, input: string | CountRow[], sourceName = 'I
           documentDate: occurredAt,
           rawText: rowText(row),
           rawJson: row,
-          contentHash: digest(row),
+          contentHash: identity.digest,
         })
         const decisionId = createDecision(db, {
           title: `Apply inventory count ${externalId}: ${skuName}`,
@@ -269,22 +418,40 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
   const rows = parseJsonOrCsv<ToastSalesRow>(input)
   const sourceId = ensureSource(db, sourceName, 'toast')
   const runId = beginIngestRun(db, sourceId)
+  const runAt = new Date().toISOString()
   let imported = 0
   let errors = 0
 
   try {
-    withTransaction(db, () => {
-      rows.forEach((row, index) => {
-        const menuItemName = value(row.menuItem, row.menuItemName)
-        const quantitySold = toNumber(row.quantitySold, toNumber(row.quantity))
-        const occurredAt = value(row.occurredAt, row.businessDate) || new Date().toISOString()
-        if (!menuItemName || quantitySold <= 0) {
+    withImmediateTransaction(db, () => {
+      rows.forEach((row) => {
+        const sourceRow = row as Record<string, unknown>
+        const menuItemName = fieldValue(sourceRow, 'menuItem', 'menuitem', 'menu_item', 'menuItemName', 'menuitemname', 'menu_item_name')
+        const quantity = fieldNumber(sourceRow, ['quantity'])
+        const quantitySold = fieldNumber(
+          sourceRow,
+          ['quantitySold', 'quantitysold', 'quantity_sold'],
+          quantity ?? undefined,
+        )
+        const occurredAt = fieldInstant(
+          sourceRow,
+          ['occurredAt', 'occurredat', 'occurred_at', 'businessDate', 'businessdate', 'business_date'],
+          runAt,
+        )
+        if (!validName(menuItemName) || quantitySold === null || quantitySold <= 0 || occurredAt === null) {
           errors += 1
           return
         }
 
-        const externalId = value(row.externalId) || `${sourceName}-${index + 1}-${digest(row).slice(0, 10)}`
-        if (hasSourceDocument(db, sourceId, externalId, 'toast_sale')) return
+        const externalId =
+          fieldValue(sourceRow, 'externalId', 'externalid', 'external_id') ||
+          contentDerivedId('toast', row)
+        const identity = {
+          externalId,
+          legacyExternalId: null,
+          digest: contentDigest(row),
+        }
+        if (hasSourceDocument(db, sourceId, identity, 'toast_sale')) return
 
         const documentId = createSourceDocument(db, {
           sourceId,
@@ -293,9 +460,9 @@ export const ingestToastSales = (db: Db, input: string | ToastSalesRow[], source
           documentDate: occurredAt,
           rawText: rowText(row),
           rawJson: row,
-          contentHash: digest(row),
+          contentHash: identity.digest,
         })
-        const menuItemId = ensureMenuItem(db, menuItemName, row.externalId ?? null)
+        const menuItemId = ensureMenuItem(db, menuItemName, externalId)
         const recipes = db.prepare('SELECT sku_id, quantity, unit, yield_quantity FROM recipes WHERE menu_item_id = ? AND active = 1').all(menuItemId)
         if (recipes.length === 0) {
           const decisionId = createDecision(db, {

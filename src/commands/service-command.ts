@@ -52,10 +52,16 @@ export const runServiceCommand = async (
 
 export const requirePathArg = (args: string[], noun: string, context: CommandContext): string => {
   const value = args[0]
-  if (!value) {
+  if (!value || value.startsWith('--') || args.length !== 1) {
     throw new OperatorInputError(
-      `Missing ${noun} path. Usage: bbk ingest ${noun} <path>.`,
+      `Missing or invalid ${noun} path. Usage: bbk ingest ${noun} <path>.`,
     )
   }
   return resolve(context.cwd, value)
+}
+
+export const requireNoArgs = (args: string[], usage: string): void => {
+  if (args.length > 0) {
+    throw new OperatorInputError(`Unexpected argument: ${args[0]}`, `usage: ${usage}`)
+  }
 }

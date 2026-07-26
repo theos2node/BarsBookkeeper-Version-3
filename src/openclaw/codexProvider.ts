@@ -1,9 +1,27 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { AppConfig, ModelEffort } from '../config.js'
 import { recordOpenClawUsage } from './usage.js'
 
 const execFileAsync = promisify(execFile)
+
+const codexEnvironmentKeys = [
+  'CODEX_HOME',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LOGNAME',
+  'NO_COLOR',
+  'PATH',
+  'SHELL',
+  'TERM',
+  'TMPDIR',
+  'USER',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+] as const
 
 export type CodexStatus = {
   installed: boolean
@@ -41,7 +59,7 @@ export const readCodexStatus = async (): Promise<CodexStatus> => {
     return {
       installed: false,
       loggedIn: false,
-      statusText: err?.message || 'codex_not_available',
+      statusText: err?.code === 'ENOENT' ? 'codex_not_available' : 'codex_login_not_confirmed',
     }
   }
 }
@@ -56,20 +74,22 @@ export const runCodexJson = async <T>(request: CodexJsonRequest): Promise<T> => 
   ].join('\n')
 
   try {
-    const { stdout } = await execFileAsync(
-      'codex',
+    const { stdout } = await runCodexWithPrivateStdin(
       [
         'exec',
+        '--ephemeral',
+        '--ignore-rules',
+        '--ignore-user-config',
+        '--skip-git-repo-check',
+        '--sandbox',
+        'read-only',
         '--model',
         request.model,
         '-c',
         `model_reasoning_effort="${request.reasoningEffort}"`,
-        prompt,
+        '-',
       ],
-      {
-        timeout: 180000,
-        maxBuffer: 8 * 1024 * 1024,
-      }
+      prompt,
     )
     recordOpenClawUsage({
       model: request.model,
@@ -83,6 +103,67 @@ export const runCodexJson = async <T>(request: CodexJsonRequest): Promise<T> => 
     throw err
   }
 }
+
+const runCodexWithPrivateStdin = (
+  args: string[],
+  input: string,
+  options: { timeoutMs?: number; maxBufferBytes?: number } = {},
+): Promise<{ stdout: string; stderr: string }> =>
+  new Promise((resolve, reject) => {
+    const timeoutMs = options.timeoutMs ?? 180_000
+    const maxBufferBytes = options.maxBufferBytes ?? 8 * 1024 * 1024
+    const child = spawn('codex', args, {
+      env: codexEnvironment(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+
+    const finish = (error?: Error): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (error) reject(error)
+      else resolve({ stdout, stderr })
+    }
+    const append = (current: string, chunk: Buffer): string => {
+      const next = current + chunk.toString('utf8')
+      if (Buffer.byteLength(next, 'utf8') > maxBufferBytes) {
+        child.kill('SIGKILL')
+        finish(new Error('codex_output_limit_exceeded'))
+      }
+      return next
+    }
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout = append(stdout, chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr = append(stderr, chunk)
+    })
+    child.on('error', (error) => finish(error))
+    child.on('close', (code, signal) => {
+      if (code === 0) finish()
+      else finish(new Error(`codex_execution_failed:${code ?? signal ?? 'unknown'}`))
+    })
+    child.stdin.on('error', () => undefined)
+    child.stdin.end(input)
+
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish(new Error('codex_execution_timed_out'))
+    }, timeoutMs)
+    timeout.unref()
+  })
+
+const codexEnvironment = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(
+    codexEnvironmentKeys.flatMap((key) => {
+      const value = process.env[key]
+      return value === undefined ? [] : [[key, value]]
+    }),
+  )
 
 export const smokeTestCodexModel = async (model: string, reasoningEffort: ModelEffort) => {
   return runCodexJson<{ ok: boolean; model: string }>({

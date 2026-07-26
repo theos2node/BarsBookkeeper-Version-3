@@ -1,19 +1,23 @@
 import { execFile } from 'node:child_process'
-import { mkdir, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { chmod, mkdir, stat } from 'node:fs/promises'
 import { promisify } from 'node:util'
+import { openReadonlyDatabase, toNumber } from '../db/database.js'
 import { callBackend, BackendUnavailableError, withBackendDb } from './backend.js'
-import { runServiceCommand } from './service-command.js'
+import { requireNoArgs, runServiceCommand } from './service-command.js'
 import type { CommandContext } from './types.js'
 
 const execFileAsync = promisify(execFile)
 
-export const setup = async (_args: string[], context: CommandContext): Promise<void> => {
+export const setup = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk setup')
   const { terminal, config } = context
   terminal.title('Bars Bookkeeper setup')
-  await mkdir(config.dataDir, { recursive: true })
-  await mkdir(config.filesDir, { recursive: true })
+  await mkdir(config.dataDir, { recursive: true, mode: 0o700 })
+  await mkdir(config.filesDir, { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') {
+    await chmod(config.dataDir, 0o700)
+    await chmod(config.filesDir, 0o700)
+  }
   terminal.success(`Data directory ready: ${config.dataDir}`)
   terminal.success(`File store ready: ${config.filesDir}`)
 
@@ -21,8 +25,42 @@ export const setup = async (_args: string[], context: CommandContext): Promise<v
   terminal.success('Database ready.')
 }
 
-export const seedDemo = async (args: string[], context: CommandContext): Promise<void> =>
-  runServiceCommand(args, context, {
+export const healthcheck = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk healthcheck')
+  const { config, terminal } = context
+  const [dataDirectory, fileStore, databaseFile] = await Promise.all([
+    stat(config.dataDir),
+    stat(config.filesDir),
+    stat(config.dbPath),
+  ]).catch((error) => {
+    throw new Error(`healthcheck_storage_unavailable:${error instanceof Error ? error.message : String(error)}`)
+  })
+  if (!dataDirectory.isDirectory()) throw new Error('healthcheck_data_directory_invalid')
+  if (!fileStore.isDirectory()) throw new Error('healthcheck_file_store_invalid')
+  if (!databaseFile.isFile()) throw new Error('healthcheck_database_invalid')
+
+  const db = openReadonlyDatabase(config.dbPath)
+  try {
+    const quickCheck = db.prepare('PRAGMA quick_check').get()
+    if (String(Object.values(quickCheck ?? {})[0] ?? '') !== 'ok') {
+      throw new Error('healthcheck_database_integrity_failed')
+    }
+    const latestMigration = toNumber(
+      db.prepare('SELECT MAX(id) AS latest FROM schema_migrations').get()?.latest,
+    )
+    if (latestMigration < 15) {
+      throw new Error(`healthcheck_database_migration_stale:${latestMigration}`)
+    }
+  } finally {
+    db.close()
+  }
+
+  terminal.success('Storage, database integrity, and schema readiness passed.')
+}
+
+export const seedDemo = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk seed-demo')
+  return runServiceCommand(args, context, {
     title: 'Seed demo data',
     started: 'Looking for demo seed service...',
     done: 'Demo data seed completed.',
@@ -32,9 +70,11 @@ export const seedDemo = async (args: string[], context: CommandContext): Promise
     withDb: true,
     args: (_rawArgs, _context, { db }) => [db],
   })
+}
 
-export const seedFieldDemo = async (args: string[], context: CommandContext): Promise<void> =>
-  runServiceCommand(args, context, {
+export const seedFieldDemo = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk seed-field-demo')
+  return runServiceCommand(args, context, {
     title: 'Seed field demo',
     started: 'Generating field-style invoices, Toast sales, counts, forecasts, and orders...',
     done: 'Field demo workflow completed.',
@@ -44,8 +84,10 @@ export const seedFieldDemo = async (args: string[], context: CommandContext): Pr
     withDb: true,
     args: (_rawArgs, _context, { db }) => [db],
   })
+}
 
-export const doctor = async (_args: string[], context: CommandContext): Promise<void> => {
+export const doctor = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk doctor')
   const { terminal, config } = context
   terminal.title('Bars Bookkeeper doctor')
 
@@ -59,12 +101,64 @@ export const doctor = async (_args: string[], context: CommandContext): Promise<
   terminal.section('Codex')
   await checkCodex(terminal)
 
+  terminal.section('Backbone')
+  await checkBackbone(config, terminal)
+
   terminal.section('Model smoke')
   if (process.env.BBK_SKIP_MODEL_SMOKE === '1') {
     terminal.status('skip', 'model smoke check skipped', 'BBK_SKIP_MODEL_SMOKE=1')
     return
   }
   await checkModelSmoke(context)
+}
+
+const checkBackbone = async (
+  config: CommandContext['config'],
+  terminal: CommandContext['terminal'],
+): Promise<void> => {
+  try {
+    await withBackendDb(config, async (db: any) => {
+      const latestRun = db
+        .prepare(
+          `SELECT id, as_of
+           FROM backbone_runs
+           WHERE status = 'completed'
+           ORDER BY id DESC
+           LIMIT 1`,
+        )
+        .get()
+      const predictions = toScalar(db, 'SELECT COUNT(*) AS count FROM backbone_predictions')
+      const listenerCycles = toScalar(db, 'SELECT COUNT(*) AS count FROM backbone_listener_cycles')
+      const environments = toScalar(db, 'SELECT COUNT(*) AS count FROM backbone_environments')
+      const cursor = db.prepare('SELECT last_end, last_source FROM backbone_toast_cursor WHERE id = 1').get()
+
+      terminal.status(
+        latestRun ? 'ok' : 'warn',
+        latestRun ? `latest Backbone run: ${latestRun.id}` : 'no completed Backbone run yet',
+        latestRun?.as_of ?? 'run `bbk backbone run` or `bbk backbone listen --once`',
+      )
+      terminal.status(predictions > 0 ? 'ok' : 'warn', `Backbone predictions stored: ${predictions}`)
+      terminal.status(
+        listenerCycles > 0 ? 'ok' : 'warn',
+        `Backbone listener cycles: ${listenerCycles}`,
+        listenerCycles > 0 ? undefined : 'run `bbk backbone listen --once`',
+      )
+      terminal.status(
+        cursor?.last_end ? 'ok' : 'warn',
+        cursor?.last_end ? `Toast cursor: ${cursor.last_end}` : 'Toast cursor not established',
+        cursor?.last_source,
+      )
+      terminal.status('info', `isolated Backbone environments: ${environments}`)
+    })
+  } catch (error) {
+    terminal.status('warn', 'Backbone readiness unavailable', error instanceof Error ? error.message : String(error))
+  }
+}
+
+const toScalar = (db: any, sql: string): number => {
+  const row = db.prepare(sql).get()
+  const value = row?.count ?? row?.value
+  return typeof value === 'number' ? value : Number(value) || 0
 }
 
 const checkPath = async (
@@ -105,13 +199,7 @@ const checkCodex = async (terminal: CommandContext['terminal']): Promise<void> =
     return
   }
 
-  const authFile = resolve(homedir(), '.codex', 'auth.json')
-  try {
-    await stat(authFile)
-    terminal.status('ok', 'codex login file present', authFile)
-  } catch {
-    terminal.status('warn', 'codex login was not confirmed', 'run `codex login` if model calls fail')
-  }
+  terminal.status('warn', 'codex login was not confirmed', 'run `codex login` if model calls fail')
 }
 
 const checkModelSmoke = async (context: CommandContext): Promise<void> => {

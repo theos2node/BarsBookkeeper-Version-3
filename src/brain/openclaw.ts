@@ -28,6 +28,41 @@ const duplicateDecisionExists = (db: Db, title: string, payload: Record<string, 
   return Boolean(existing)
 }
 
+const updateExistingInventoryRiskDecision = (
+  db: Db,
+  input: {
+    title: string
+    payload: Record<string, unknown>
+    confidence: number
+    riskLevel: 'low' | 'medium' | 'high' | 'critical'
+    evidence?: unknown[]
+  },
+): boolean => {
+  if (input.payload.kind !== 'inventory_risk_review') return false
+  const skuId = toNumber(input.payload.skuId)
+  if (!skuId) return false
+
+  const existing = db
+    .prepare(
+      `SELECT id
+       FROM openclaw_decisions
+       WHERE state IN (${activeStates.map(() => '?').join(', ')})
+         AND payload_json LIKE ?
+         AND payload_json LIKE ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get(...activeStates, '%"kind":"inventory_risk_review"%', `%"skuId":${skuId}%`)
+  if (!existing) return false
+
+  db.prepare(
+    `UPDATE openclaw_decisions
+     SET title = ?, risk_level = ?, payload_json = ?, confidence = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+  ).run(input.title, input.riskLevel, stringifyJson(input.payload), input.confidence, stringifyJson(input.evidence ?? []), toNumber(existing.id))
+  return true
+}
+
 const proposeOnce = (
   db: Db,
   input: {
@@ -38,6 +73,7 @@ const proposeOnce = (
     evidence?: unknown[]
   },
 ): boolean => {
+  if (updateExistingInventoryRiskDecision(db, input)) return false
   if (duplicateDecisionExists(db, input.title, input.payload)) return false
   createDecision(db, {
     ...input,
@@ -69,7 +105,7 @@ const buildMissingRecipeTasks = (db: Db) => {
     )
     .all()
 
-  return rows.filter((row) => !hasOpenMissingRecipeDecision(db, toNumber(row.source_document_id), toNumber(row.menu_item_id))).map((row) => {
+  return rows.filter((row) => !hasHandledMissingRecipeDecision(db, toNumber(row.source_document_id), toNumber(row.menu_item_id))).map((row) => {
     const payload = parseJson<Record<string, unknown>>(row.payload_json, {})
     return {
       title: `Review recipe mapping: ${toStringValue(row.menu_item_name)}`,
@@ -96,27 +132,27 @@ const buildMissingRecipeTasks = (db: Db) => {
   })
 }
 
-const hasOpenMissingRecipeDecision = (db: Db, sourceDocumentId: number, menuItemId: number): boolean =>
+const hasHandledMissingRecipeDecision = (db: Db, sourceDocumentId: number, menuItemId: number): boolean =>
   Boolean(
     db
       .prepare(
         `SELECT id
          FROM openclaw_decisions
-         WHERE state IN ('proposed', 'needs_review', 'auto_applied')
+         WHERE state IN ('proposed', 'needs_review', 'auto_applied', 'suppressed')
            AND payload_json LIKE ?
            AND payload_json LIKE ?
            AND payload_json LIKE ?
          LIMIT 1`,
       )
-      .get('%"kind":"missing_recipe"%', `%"sourceDocumentId":${sourceDocumentId}%`, `%"menuItemId":${menuItemId}%`),
+      .get('%"kind":"missing_recipe%', `%"sourceDocumentId":${sourceDocumentId}%`, `%"menuItemId":${menuItemId}%`),
   )
 
 const buildInventoryRiskTasks = (db: Db) => {
   const positions = getInventoryPositions(db)
   return positions
-    .filter((position) => position.warningState === 'critical' || position.warningState === 'low')
+    .filter((position) => position.warningState !== 'ok')
     .map((position) => {
-      const riskLevel = position.warningState === 'critical' ? 'high' : 'medium'
+      const riskLevel = position.warningState === 'critical' ? 'high' : position.warningState === 'low' ? 'medium' : 'low'
       return {
         title: `Review ${position.warningState} inventory: ${position.name}`,
         payload: {
@@ -147,6 +183,7 @@ const buildSourceFreshnessTasks = (db: Db) => {
        FROM sources s
        LEFT JOIN ingest_runs r ON r.source_id = s.id AND r.status = 'completed'
        WHERE s.is_active = 1
+         AND s.kind != 'seed'
        GROUP BY s.id
        ORDER BY s.name`,
     )
