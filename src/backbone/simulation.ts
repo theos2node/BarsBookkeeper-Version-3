@@ -467,9 +467,9 @@ const seedBackboneReference = (db: Db, profile: ScenarioProfile): void => {
 }
 
 const simulationInvoices = (start: Date, profile: ScenarioProfile): InvoiceRow[] => [
-  { vendor: 'Premium Bottle House', invoiceNumber: `BB-SIM-${profile.name}-VODKA`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Vodka 1L', quantity: profile.initial.vodka, unit: 'ml', unitCost: 0.05, category: 'liquor' },
-  { vendor: 'Value Spirits Co', invoiceNumber: `BB-SIM-${profile.name}-TEQUILA`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Tequila 1L', quantity: profile.initial.tequila, unit: 'ml', unitCost: 0.032, category: 'liquor' },
-  { vendor: 'Value Spirits Co', invoiceNumber: `BB-SIM-${profile.name}-TRIPLE`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Triple Sec 1L', quantity: profile.initial.tripleSec, unit: 'ml', unitCost: 0.016, category: 'liquor' },
+  { vendor: 'Premium Bottle House', invoiceNumber: `BB-SIM-${profile.name}-VODKA`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Vodka 1L', quantity: profile.initial.vodka, unit: 'ml', unitCost: 0.05, packSize: 1000, packUnit: 'bottle', category: 'liquor' },
+  { vendor: 'Value Spirits Co', invoiceNumber: `BB-SIM-${profile.name}-TEQUILA`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Tequila 1L', quantity: profile.initial.tequila, unit: 'ml', unitCost: 0.032, packSize: 1000, packUnit: 'bottle', category: 'liquor' },
+  { vendor: 'Value Spirits Co', invoiceNumber: `BB-SIM-${profile.name}-TRIPLE`, invoiceDate: isoDay(start, 0, 9), sku: 'Backbone Triple Sec 1L', quantity: profile.initial.tripleSec, unit: 'ml', unitCost: 0.016, packSize: 1000, packUnit: 'bottle', category: 'liquor' },
 ]
 
 const simulationLateInvoices = (start: Date, profile: ScenarioProfile): InvoiceRow[] => {
@@ -484,6 +484,8 @@ const simulationLateInvoices = (start: Date, profile: ScenarioProfile): InvoiceR
       quantity: invoice.quantity,
       unit: 'ml',
       unitCost: invoice.unitCost,
+      packSize: 1000,
+      packUnit: 'bottle',
       category: 'liquor',
     },
   ]

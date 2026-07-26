@@ -6,6 +6,7 @@ type LaunchdInput = {
   label: string
   workingDirectory: string
   dataDir: string
+  envFile?: string
   intervalMs: number
   stdoutPath: string
   stderrPath: string
@@ -30,9 +31,12 @@ export const resolveCliInvocation = (): string[] => {
   throw new Error('bars_bookkeeper_cli_entrypoint_not_found:run_npm_build')
 }
 
-const environmentXml = (dataDir: string): string => `
+const environmentXml = (dataDir: string, envFile?: string): string => `
     <key>BBK_DATA_DIR</key>
     <string>${xmlEscape(dataDir)}</string>
+${envFile ? `    <key>BBK_ENV_FILE</key>
+    <string>${xmlEscape(envFile)}</string>
+` : ''}
     <key>OPENCLAW_USE_CODEX</key>
     <string>${xmlEscape(process.env.OPENCLAW_USE_CODEX ?? '0')}</string>
     <key>PATH</key>
@@ -60,7 +64,7 @@ export const renderLaunchdPlist = (input: LaunchdInput): string => {
 ${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
   </array>
   <key>EnvironmentVariables</key>
-  <dict>${environmentXml(input.dataDir)}
+  <dict>${environmentXml(input.dataDir, input.envFile)}
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -96,7 +100,7 @@ export const renderMaintenanceLaunchdPlist = (input: MaintenanceLaunchdInput): s
 ${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
   </array>
   <key>EnvironmentVariables</key>
-  <dict>${environmentXml(input.dataDir)}
+  <dict>${environmentXml(input.dataDir, input.envFile)}
   </dict>
   <key>RunAtLoad</key>
   <true/>

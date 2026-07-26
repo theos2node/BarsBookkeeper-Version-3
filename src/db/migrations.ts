@@ -477,6 +477,55 @@ const migrations: Migration[] = [
         WHERE reversed_event_id IS NOT NULL;
     `,
   },
+  {
+    id: 14,
+    name: 'toast_recipe_application_uniqueness',
+    sql: `
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_events_toast_recipe_once
+        ON inventory_events(source_document_id, sku_id, event_type)
+        WHERE source_document_id IS NOT NULL
+          AND event_type = 'sale'
+          AND reversed_event_id IS NULL;
+    `,
+  },
+  {
+    id: 15,
+    name: 'repair_legacy_invoice_pack_observations',
+    sql: `
+      UPDATE vendor_item_prices
+      SET pack_size = (
+            SELECT vi.pack_size
+            FROM vendor_items vi
+            WHERE vi.id = vendor_item_prices.vendor_item_id
+          ),
+          pack_unit = (
+            SELECT vi.pack_unit
+            FROM vendor_items vi
+            WHERE vi.id = vendor_item_prices.vendor_item_id
+          ),
+          price = unit_cost * (
+            SELECT vi.pack_size
+            FROM vendor_items vi
+            WHERE vi.id = vendor_item_prices.vendor_item_id
+          )
+      WHERE source_document_id IN (
+              SELECT sd.id
+              FROM source_documents sd
+              WHERE sd.document_type = 'invoice'
+                AND COALESCE(
+                  NULLIF(TRIM(json_extract(sd.raw_json, '$.packSize')), ''),
+                  NULLIF(TRIM(json_extract(sd.raw_json, '$.packsize')), ''),
+                  NULLIF(TRIM(json_extract(sd.raw_json, '$.pack_size')), '')
+                ) IS NULL
+            )
+        AND EXISTS (
+              SELECT 1
+              FROM vendor_items vi
+              WHERE vi.id = vendor_item_prices.vendor_item_id
+                AND vi.pack_size > 0
+            );
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {

@@ -435,20 +435,76 @@ const latestCountAgeDays = (db: Db, skuId: number, asOf: string): number | null 
   return row?.occurred_at ? daysBetween(asOf, toStringValue(row.occurred_at)) : null
 }
 
-const shrinkRate = (db: Db, skuId: number, asOf: string, windowDays: number): number => {
+const shrinkRates = (
+  db: Db,
+  skuId: number,
+  asOf: string,
+  windowDays: number,
+): { explicitDaily: number; inferredDaily: number; totalDaily: number } => {
   const start = new Date(new Date(asOf).getTime() - windowDays * 24 * 60 * 60 * 1000).toISOString()
-  const row = db
+  const explicitShrink = toNumber(
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(ABS(quantity)), 0) AS shrink
+         FROM inventory_events
+         WHERE sku_id = ?
+           AND event_type = 'shrink'
+           AND quantity < 0
+           AND occurred_at >= ?
+           AND occurred_at <= ?`,
+      )
+      .get(skuId, start, asOf)?.shrink,
+  ) / Math.max(1, windowDays)
+  const countAdjustments = db
     .prepare(
-      `SELECT COALESCE(SUM(ABS(quantity)), 0) AS shrink
-       FROM inventory_events
-       WHERE sku_id = ?
-         AND event_type IN ('shrink', 'adjustment')
-         AND quantity < 0
-         AND occurred_at >= ?
-         AND occurred_at <= ?`,
+      `SELECT e.quantity,
+              e.occurred_at,
+              COALESCE(
+                (
+                  SELECT MAX(prior.occurred_at)
+                  FROM inventory_events prior
+                  WHERE prior.sku_id = e.sku_id
+                    AND prior.event_type = 'adjustment'
+                    AND prior.occurred_at < e.occurred_at
+                    AND ${countGroundingPredicate('prior')}
+                ),
+                (
+                  SELECT MIN(first.occurred_at)
+                  FROM inventory_events first
+                  WHERE first.sku_id = e.sku_id
+                    AND first.occurred_at < e.occurred_at
+                ),
+                ?
+              ) AS interval_start
+       FROM inventory_events e
+       WHERE e.sku_id = ?
+         AND e.event_type = 'adjustment'
+         AND e.quantity < 0
+         AND e.occurred_at >= ?
+         AND e.occurred_at <= ?
+         AND ${countGroundingPredicate('e')}
+       ORDER BY e.occurred_at, e.id`,
     )
-    .get(skuId, start, asOf)
-  return toNumber(row?.shrink) / Math.max(1, windowDays)
+    .all(start, skuId, start, asOf)
+  const countLoss = countAdjustments.reduce(
+    (total, row) => total + Math.abs(toNumber(row.quantity)),
+    0,
+  )
+  const observedDays = countAdjustments.reduce(
+    (total, row) =>
+      total +
+      Math.max(
+        1,
+        daysBetween(toStringValue(row.occurred_at), toStringValue(row.interval_start, start)),
+      ),
+    0,
+  )
+  const inferredShrink = observedDays > 0 ? countLoss / observedDays : 0
+  return {
+    explicitDaily: explicitShrink,
+    inferredDaily: inferredShrink,
+    totalDaily: explicitShrink + inferredShrink,
+  }
 }
 
 const weekdayUsageAverages = (db: Db, skuId: number, asOf: string, windowDays: number): Map<number, number> => {
@@ -761,9 +817,15 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
         const latestCost = latestPurchaseCost(db, position.skuId, resolved.asOf)
         const highHistoricalCost = highHistoricalPurchaseCost(db, position.skuId, resolved.asOf)
         const countAge = latestCountAgeDays(db, position.skuId, resolved.asOf)
-        const shrinkDaily = shrinkRate(db, position.skuId, resolved.asOf, resolved.usageWindowDays)
+        const shrink = shrinkRates(db, position.skuId, resolved.asOf, resolved.usageWindowDays)
+        const shrinkDaily = shrink.totalDaily
         const leadTime = vendorCost?.leadTimeDays ?? 4
-        const rawPredictedOnHand = position.onHand - projectedUsage.totalUsage - shrinkDaily * resolved.horizonDays
+        const unobservedShrink = shrink.inferredDaily * (countAge ?? 0)
+        const rawPredictedOnHand =
+          position.onHand -
+          unobservedShrink -
+          projectedUsage.totalUsage -
+          shrinkDaily * resolved.horizonDays
         const predictedOnHand = round(Math.max(0, rawPredictedOnHand), 2)
         const predictedDaysRemaining = avgDailyUsage > 0 ? round(Math.max(0, predictedOnHand) / avgDailyUsage, 1) : null
         const confidencePenalty = countAge === null ? 0.15 : Math.min(0.25, countAge / 120)
@@ -839,6 +901,7 @@ export const runBackboneModel = (db: Db, options: BackboneOptions = {}): Backbon
             positionWarningState: position.warningState,
             countAgeDays: countAge,
             shrinkDaily: round(shrinkDaily, 4),
+            unobservedShrink: round(unobservedShrink, 3),
             vendorCost,
             latestCost,
             highHistoricalCost,

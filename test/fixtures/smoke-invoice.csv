@@ -1,4 +1,4 @@
-vendor,invoiceNumber,invoiceDate,sku,quantity,unit,unitCost,category
-Value Spirits Co,SMOKE-INV-000,2026-05-11T12:55:00.000Z,House Vodka 1L,1000,ml,0.014,liquor
-Southern Glazer,SMOKE-INV-001,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.025,liquor
-Local Produce Co,SMOKE-INV-002,2026-05-11T13:05:00.000Z,Lime Juice,1000,ml,0.008,produce
+vendor,invoiceNumber,invoiceDate,sku,quantity,unit,unitCost,packSize,packUnit,category
+Value Spirits Co,SMOKE-INV-000,2026-05-11T12:55:00.000Z,House Vodka 1L,1000,ml,0.014,1000,bottle,liquor
+Southern Glazer,SMOKE-INV-001,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.025,1000,bottle,liquor
+Local Produce Co,SMOKE-INV-002,2026-05-11T13:05:00.000Z,Lime Juice,1000,ml,0.008,1000,case,produce

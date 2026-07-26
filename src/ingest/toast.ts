@@ -552,9 +552,21 @@ export const pullToast = async (db: Db, config: AppConfig, args: string[] = []):
   assertKnownToastOptions(args, toastPullOptions)
   const file = argValue(args, 'file')
   if (file) {
-    const fileFlag = args.find((arg) => arg === '--file' || arg.startsWith('--file='))
-    const expectedArguments = fileFlag?.includes('=') ? 1 : 2
-    if (args.length !== expectedArguments) throw new Error('toast_file_option_conflict')
+    const allowedFileOptions = new Set(['--file', '--start', '--end'])
+    const conflicting = args.find(
+      (arg) => arg.startsWith('--') && !allowedFileOptions.has(arg.split('=', 1)[0]),
+    )
+    if (conflicting) throw new Error(`toast_file_option_conflict:${conflicting.split('=', 1)[0]}`)
+    const start = argValue(args, 'start')
+    const end = argValue(args, 'end')
+    if (Boolean(start) !== Boolean(end)) throw new Error('toast_file_window_incomplete')
+    if (start && end) {
+      const parsedStart = parseIsoInstant(start, '--start')
+      const parsedEnd = parseIsoInstant(end, '--end')
+      if (new Date(parsedStart).getTime() > new Date(parsedEnd).getTime()) {
+        throw new Error('toast_pull_window_invalid')
+      }
+    }
     const rows = await readRowsFromFile(file)
     return {
       configured: true,

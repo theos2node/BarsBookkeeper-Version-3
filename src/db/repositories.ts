@@ -138,8 +138,8 @@ export const ensureVendorItem = (
   },
 ): number => {
   const existing = db.prepare('SELECT id FROM vendor_items WHERE vendor_id = ? AND sku_id = ?').get(input.vendorId, input.skuId)
-  const packSize = input.packSize && input.packSize > 0 ? input.packSize : 1
-  const packUnit = input.packUnit?.trim() || 'unit'
+  const packSize = input.packSize && input.packSize > 0 ? input.packSize : null
+  const packUnit = input.packUnit?.trim() || null
 
   if (existing) {
     db.prepare(
@@ -174,8 +174,8 @@ export const ensureVendorItem = (
       input.vendorId,
       input.skuId,
       input.vendorSku ?? null,
-      packSize,
-      packUnit,
+      packSize ?? 1,
+      packUnit ?? 'unit',
       input.price ?? null,
       input.leadTimeDays ?? 2,
       input.minOrderQty ?? 0,

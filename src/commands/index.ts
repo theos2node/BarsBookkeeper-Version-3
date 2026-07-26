@@ -1,5 +1,5 @@
 import { brainRun, forecastRun, ingestCount, ingestInvoice, ingestNote, ordersGenerate, review, toastConnect, toastMapRecipe, toastPull } from './workflows.js'
-import { doctor, seedDemo, seedFieldDemo, setup } from './system.js'
+import { doctor, healthcheck, seedDemo, seedFieldDemo, setup } from './system.js'
 import { consoleCommand } from './console.js'
 import { backboneAcceptance, backboneAccuracy, backboneActions, backboneAudit, backboneBacktest, backboneBacktestMatrix, backboneDrift, backboneEnvPrune, backboneEnvs, backboneExplain, backboneGaps, backboneIntake, backboneListen, backboneMaintain, backboneMaintainHistory, backboneMaintainService, backboneMatrix, backboneMemory, backbonePlan, backboneRecipeSuggestions, backboneRun, backboneService, backboneSimulate, backboneSnapshot, backboneSnapshotRestore, backboneSnapshotVerify, backboneStatus, backboneTrust, backboneVerify, backboneVerifyHistory } from './backbone.js'
 import type { CommandContext, CommandDefinition } from './types.js'
@@ -18,6 +18,12 @@ export const createCommands = (
     usage: 'bbk doctor',
     summary: 'Check local paths, Codex login status, and model provider smoke hooks.',
     handler: doctor,
+  },
+  {
+    path: ['healthcheck'],
+    usage: 'bbk healthcheck',
+    summary: 'Fail unless local storage, SQLite integrity, and schema readiness are healthy.',
+    handler: healthcheck,
   },
   {
     path: ['seed-demo'],

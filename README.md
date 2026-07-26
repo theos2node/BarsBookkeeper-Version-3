@@ -99,6 +99,19 @@ npm run bbk -- review reverse 42
 Use `--dry-run` for rough notes before importing. Bottle quantities use the
 active vendor pack size for the matched SKU.
 
+### Import formats
+
+Invoice CSV rows require `vendor`, `invoiceNumber`, `invoiceDate`, `sku`,
+`quantity`, `unit`, and either `unitCost` or `totalCost`. `quantity` is the
+delivered inventory amount. Optional `packSize` and `packUnit` columns update
+the vendor catalog used for order rounding; Bars Bookkeeper never guesses pack
+size from shipment quantity.
+
+An invoice number or count ID may repeat across multiple SKU rows. Each line
+receives a stable content identity, so reordering and replaying the same file
+does not duplicate or drop evidence. Malformed quotes, duplicate CSV headers,
+and uneven rows fail before ingest.
+
 ## Architecture
 
 ```mermaid
@@ -148,7 +161,9 @@ Toast or enables the Codex integration.
 and client secrets are accepted only through environment variables or
 permission-restricted secret files. Secret command-line flags are rejected.
 Codex prompts are sent through standard input instead of process arguments
-and model calls run ephemerally in a read-only sandbox.
+and model calls run ephemerally in a read-only sandbox. The Codex subprocess
+receives only an operating-system environment allowlist; Toast credentials and
+Bars Bookkeeper configuration are not inherited.
 
 Read [Security model](docs/security-model.md) before connecting production
 data. Report vulnerabilities through the process in [SECURITY.md](SECURITY.md).
@@ -299,7 +314,8 @@ OPENCLAW_USE_CODEX=1 npm run bbk -- brain run
 Bars Bookkeeper does not store an OpenAI API key. Codex prompts are passed over
 standard input, invocations are ephemeral, project rules are ignored, and the
 CLI sandbox is read-only. Usage and cost displays are local estimates based on
-character counts and operator-configured rates, not billing records.
+character counts and operator-configured rates, not billing records. Rates
+default to zero until configured.
 
 ## Development
 
@@ -316,8 +332,8 @@ production build, and a package dry run. CI repeats the release gate on Node.js
 
 The test suite covers the CLI workflow, replay safety, malformed ingest,
 Toast retry behavior, secret handling, migration integrity, concurrent
-runtime leases, snapshot restore, model-prompt privacy, simulations, and
-decision review.
+runtime leases, concurrent usage accounting, snapshot restore, model-prompt
+privacy, hostile TUI text, simulations, and decision review.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. Notable
 changes are tracked in [CHANGELOG.md](CHANGELOG.md).

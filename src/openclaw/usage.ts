@@ -41,13 +41,17 @@ export type UsageSummary = {
 }
 
 export const defaultModelRates: Record<string, ModelRate> = {
-  'gpt-5.4': { inputUsdPerMillion: 2.5, outputUsdPerMillion: 15 },
-  'gpt-5.4-mini': { inputUsdPerMillion: 0.75, outputUsdPerMillion: 4.5 },
+  'gpt-5.4': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+  'gpt-5.4-mini': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
 }
 
 const ledgerPath = (): string => resolve(process.env.BBK_DATA_DIR || './data', 'openclaw-usage.json')
 const maximumLedgerBytes = 8 * 1024 * 1024
 const maximumLedgerRecords = 10_000
+const ledgerLockStaleMs = 5 * 60_000
+const ledgerLockRetryMs = 10
+const ledgerLockAttempts = 500
+const ledgerLockWaiter = new Int32Array(new SharedArrayBuffer(4))
 
 export const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4))
 
@@ -58,7 +62,7 @@ export const rateForModel = (model: string): ModelRate => {
   if (Number.isFinite(input) && input > 0 && Number.isFinite(output) && output > 0) {
     return { inputUsdPerMillion: input, outputUsdPerMillion: output }
   }
-  return defaultModelRates[model] ?? defaultModelRates['gpt-5.4-mini']
+  return defaultModelRates[model] ?? { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }
 }
 
 export const estimateUsd = (model: string, inputTokens: number, outputTokens: number): number => {
@@ -82,9 +86,11 @@ export const recordOpenClawUsage = (input: {
     estimatedUsd: Number(estimateUsd(input.model, inputTokens, outputTokens).toFixed(8)),
     source: input.source ?? 'codex',
   }
-  const ledger = readUsageLedger()
-  ledger.records.push(record)
-  writeUsageLedger(ledger)
+  withLedgerLock(() => {
+    const ledger = readUsageLedger()
+    ledger.records.push(record)
+    writeUsageLedger(ledger)
+  })
   return record
 }
 
@@ -118,7 +124,7 @@ export const readUsageSummary = (): UsageSummary => {
     estimatedUsd: Number(estimatedUsd.toFixed(6)),
     blendedUsdPer1kTokens: totalTokens > 0 ? Number(((estimatedUsd / totalTokens) * 1000).toFixed(6)) : 0,
     rates: defaultModelRates,
-    note: 'Estimated from local prompt/output character counts; Codex ChatGPT login does not expose exact billing here.',
+    note: 'Estimated from local character counts and operator-configured rates; zero when rates are not configured.',
   }
 }
 
@@ -147,6 +153,48 @@ const writeUsageLedger = (ledger: UsageLedger): void => {
       // The atomic rename already consumed the temporary file.
     }
   }
+}
+
+const withLedgerLock = <T>(work: () => T): T => {
+  const path = ledgerPath()
+  const directory = dirname(path)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') chmodSync(directory, 0o700)
+  const lockPath = `${path}.lock`
+  const owner = `${process.pid}:${randomUUID()}`
+
+  for (let attempt = 0; attempt < ledgerLockAttempts; attempt += 1) {
+    try {
+      writeFileSync(lockPath, owner, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    } catch (error) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String(error.code)
+          : ''
+      if (code !== 'EEXIST') throw error
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > ledgerLockStaleMs) {
+          unlinkSync(lockPath)
+          continue
+        }
+      } catch {
+        continue
+      }
+      Atomics.wait(ledgerLockWaiter, 0, 0, ledgerLockRetryMs)
+      continue
+    }
+
+    try {
+      return work()
+    } finally {
+      try {
+        if (readFileSync(lockPath, 'utf8') === owner) unlinkSync(lockPath)
+      } catch {
+        // A stale-lock recovery may already have removed it.
+      }
+    }
+  }
+  throw new Error('openclaw_usage_lock_timeout')
 }
 
 const isUsageRecord = (value: unknown): value is UsageRecord => {

@@ -556,7 +556,7 @@ describe('Backbone prediction model', () => {
     expect(evidence.latestCost).toBe(0.02)
     expect(evidence.highHistoricalCost).toBe(0.02)
     expect(evidence.vendorCost.unitCost).toBe(0.02)
-    expect(evidence.vendorCost.price).toBe(40)
+    expect(evidence.vendorCost.price).toBe(20)
     expect(evidence.countAgeDays).toBeNull()
     expect(db.prepare('SELECT COUNT(*) AS count FROM vendor_item_prices WHERE sku_id = ?').get(skuId)?.count).toBe(2)
   })
@@ -598,6 +598,7 @@ describe('Backbone prediction model', () => {
 
     db.prepare('DELETE FROM vendor_item_prices WHERE sku_id = ?').run(skuId)
     db.prepare('DELETE FROM schema_migrations WHERE id = 12').run()
+    db.prepare('DELETE FROM schema_migrations WHERE id = 15').run()
     migrateDatabase(db)
 
     const run = runBackboneModel(db, {
@@ -612,6 +613,6 @@ describe('Backbone prediction model', () => {
 
     expect(db.prepare('SELECT COUNT(*) AS count FROM vendor_item_prices WHERE sku_id = ?').get(skuId)?.count).toBe(2)
     expect(evidence.vendorCost.unitCost).toBe(0.02)
-    expect(evidence.vendorCost.price).toBe(40)
+    expect(evidence.vendorCost.price).toBe(20)
   })
 })

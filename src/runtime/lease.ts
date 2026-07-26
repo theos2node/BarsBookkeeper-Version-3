@@ -18,6 +18,11 @@ export type RuntimeLeaseInput = {
   ttlMinutes: number
 }
 
+export type RuntimeLeaseHeartbeat = {
+  assertOwned: () => void
+  stop: () => void
+}
+
 const expiresAt = (now: Date, ttlMinutes: number): string =>
   new Date(now.getTime() + Math.max(1, ttlMinutes) * 60_000).toISOString()
 
@@ -65,6 +70,35 @@ export const heartbeatRuntimeLease = (
     )
     .run(now.toISOString(), expiresAt(now, input.ttlMinutes), input.name, input.owner)
   if (toNumber(result.changes) === 0) throw new Error(`backbone_listener_lock_lost:${input.name}`)
+}
+
+export const startRuntimeLeaseHeartbeat = (
+  db: Db,
+  input: RuntimeLeaseInput,
+  options: { intervalMs?: number } = {},
+): RuntimeLeaseHeartbeat => {
+  let failure: Error | null = null
+  const refresh = (): void => {
+    if (failure) return
+    try {
+      heartbeatRuntimeLease(db, input)
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error))
+    }
+  }
+  const intervalMs =
+    options.intervalMs ??
+    Math.max(1_000, Math.min(60_000, Math.floor((Math.max(1, input.ttlMinutes) * 60_000) / 3)))
+  const timer = setInterval(refresh, intervalMs)
+  timer.unref()
+
+  return {
+    assertOwned: () => {
+      if (failure) throw failure
+      heartbeatRuntimeLease(db, input)
+    },
+    stop: () => clearInterval(timer),
+  }
 }
 
 export const releaseRuntimeLease = (

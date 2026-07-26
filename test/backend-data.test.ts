@@ -130,6 +130,113 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'count'").get()?.count).toBe(2)
   })
 
+  it('imports every line from shared invoice and count document identifiers', () => {
+    const invoices = [
+      {
+        vendor: 'Multi-line Distributor',
+        invoiceNumber: 'MULTI-INV-1',
+        invoiceDate: '2026-05-11T12:00:00.000Z',
+        sku: 'Multi-line Vodka',
+        quantity: 1000,
+        unit: 'ml',
+        unitCost: 0.02,
+        packSize: 1000,
+        packUnit: 'bottle',
+      },
+      {
+        vendor: 'Multi-line Distributor',
+        invoiceNumber: 'MULTI-INV-1',
+        invoiceDate: '2026-05-11T12:00:00.000Z',
+        sku: 'Multi-line Gin',
+        quantity: 750,
+        unit: 'ml',
+        unitCost: 0.03,
+        packSize: 750,
+        packUnit: 'bottle',
+      },
+    ]
+    const counts = [
+      {
+        countId: 'MULTI-COUNT-1',
+        occurredAt: '2026-05-11T15:00:00.000Z',
+        sku: 'Multi-line Vodka',
+        countedQuantity: 900,
+        unit: 'ml',
+      },
+      {
+        countId: 'MULTI-COUNT-1',
+        occurredAt: '2026-05-11T15:00:00.000Z',
+        sku: 'Multi-line Gin',
+        countedQuantity: 650,
+        unit: 'ml',
+      },
+    ]
+
+    expect(ingestInvoices(db, invoices).recordsImported).toBe(2)
+    expect(ingestCounts(db, counts).recordsImported).toBe(2)
+    expect(ingestInvoices(db, [...invoices].reverse()).recordsImported).toBe(0)
+    expect(ingestCounts(db, [...counts].reverse()).recordsImported).toBe(0)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'invoice'").get()?.count).toBe(2)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'count'").get()?.count).toBe(2)
+  })
+
+  it('does not infer vendor pack size from delivered invoice quantity', () => {
+    ingestInvoices(db, [
+      {
+        vendor: 'Pack-safe Distributor',
+        invoiceNumber: 'PACK-SAFE-1',
+        invoiceDate: '2026-05-11T12:00:00.000Z',
+        sku: 'Pack-safe Limes',
+        quantity: 60,
+        unit: 'each',
+        unitCost: 0.5,
+      },
+    ])
+
+    const inferred = db
+      .prepare(
+        `SELECT vi.pack_size, vi.pack_unit, vip.pack_size AS observed_pack_size
+         FROM vendor_items vi
+         JOIN vendor_item_prices vip ON vip.vendor_item_id = vi.id
+         JOIN skus s ON s.id = vi.sku_id
+         WHERE s.name = 'Pack-safe Limes'`,
+      )
+      .get()
+    expect(inferred).toMatchObject({
+      pack_size: 1,
+      pack_unit: 'unit',
+      observed_pack_size: 1,
+    })
+
+    ingestInvoices(db, [
+      {
+        vendor: 'Pack-safe Distributor',
+        invoiceNumber: 'PACK-SAFE-2',
+        invoiceDate: '2026-05-12T12:00:00.000Z',
+        sku: 'Pack-safe Limes',
+        quantity: 120,
+        unit: 'each',
+        unitCost: 0.45,
+        packSize: 24,
+        packUnit: 'case',
+      },
+    ])
+    expect(
+      db
+        .prepare(
+          `SELECT vi.pack_size, vi.pack_unit, vi.price
+           FROM vendor_items vi
+           JOIN skus s ON s.id = vi.sku_id
+           WHERE s.name = 'Pack-safe Limes'`,
+        )
+        .get(),
+    ).toMatchObject({
+      pack_size: 24,
+      pack_unit: 'case',
+      price: 10.8,
+    })
+  })
+
   it('rejects malformed count values and timestamps without mutating inventory', () => {
     const skuId = ensureSku(db, { name: 'Validated Vodka 1L', unit: 'ml' })
     const result = ingestCounts(db, [

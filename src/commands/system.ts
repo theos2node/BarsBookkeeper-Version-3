@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { chmod, mkdir, stat } from 'node:fs/promises'
 import { promisify } from 'node:util'
+import { openReadonlyDatabase, toNumber } from '../db/database.js'
 import { callBackend, BackendUnavailableError, withBackendDb } from './backend.js'
 import { requireNoArgs, runServiceCommand } from './service-command.js'
 import type { CommandContext } from './types.js'
@@ -22,6 +23,39 @@ export const setup = async (args: string[], context: CommandContext): Promise<vo
 
   await withBackendDb(config, async () => undefined)
   terminal.success('Database ready.')
+}
+
+export const healthcheck = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk healthcheck')
+  const { config, terminal } = context
+  const [dataDirectory, fileStore, databaseFile] = await Promise.all([
+    stat(config.dataDir),
+    stat(config.filesDir),
+    stat(config.dbPath),
+  ]).catch((error) => {
+    throw new Error(`healthcheck_storage_unavailable:${error instanceof Error ? error.message : String(error)}`)
+  })
+  if (!dataDirectory.isDirectory()) throw new Error('healthcheck_data_directory_invalid')
+  if (!fileStore.isDirectory()) throw new Error('healthcheck_file_store_invalid')
+  if (!databaseFile.isFile()) throw new Error('healthcheck_database_invalid')
+
+  const db = openReadonlyDatabase(config.dbPath)
+  try {
+    const quickCheck = db.prepare('PRAGMA quick_check').get()
+    if (String(Object.values(quickCheck ?? {})[0] ?? '') !== 'ok') {
+      throw new Error('healthcheck_database_integrity_failed')
+    }
+    const latestMigration = toNumber(
+      db.prepare('SELECT MAX(id) AS latest FROM schema_migrations').get()?.latest,
+    )
+    if (latestMigration < 15) {
+      throw new Error(`healthcheck_database_migration_stale:${latestMigration}`)
+    }
+  } finally {
+    db.close()
+  }
+
+  terminal.success('Storage, database integrity, and schema readiness passed.')
 }
 
 export const seedDemo = async (args: string[], context: CommandContext): Promise<void> => {

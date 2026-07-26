@@ -1,6 +1,6 @@
 import { createDecision, dismissDecision, markDecisionApplied } from '../brain/decisions.js'
 import { createEvidenceItem, createInventoryEvent, ensureMenuItem, ensureSku, upsertRecipeItem } from '../db/repositories.js'
-import { parseJson, stringifyJson, toNumber, toStringValue, withTransaction, type Db } from '../db/database.js'
+import { parseJson, stringifyJson, toNumber, toStringValue, withImmediateTransaction, type Db } from '../db/database.js'
 
 export type ToastRecipeMapInput = {
   menuItemName: string
@@ -37,7 +37,7 @@ export type ToastRecipeSuggestion = {
 }
 
 export const mapToastRecipeAndBackfill = (db: Db, input: ToastRecipeMapInput): ToastRecipeMapResult =>
-  withTransaction(db, () => {
+  withImmediateTransaction(db, () => {
     const menuItemName = input.menuItemName.trim()
     const skuName = input.skuName.trim()
     const unit = input.unit.trim() || 'unit'

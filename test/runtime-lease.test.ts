@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fixedClock } from '../src/core/clock.js'
 import { openDatabase, type Db } from '../src/db/database.js'
 import { migrateDatabase } from '../src/db/migrations.js'
@@ -10,6 +10,7 @@ import {
   heartbeatRuntimeLease,
   readRuntimeLease,
   releaseRuntimeLease,
+  startRuntimeLeaseHeartbeat,
 } from '../src/runtime/lease.js'
 
 describe('runtime lease', () => {
@@ -50,5 +51,29 @@ describe('runtime lease', () => {
     )
     expect(releaseRuntimeLease(first, { name: 'listener', owner: 'owner-a' })).toBe(false)
     expect(releaseRuntimeLease(second, { name: 'listener', owner: 'owner-b' })).toBe(true)
+  })
+
+  it('refreshes ownership during long work and reports a lost lease', () => {
+    vi.useFakeTimers()
+    try {
+      acquireRuntimeLease(first, { name: 'listener', owner: 'owner-a', ttlMinutes: 1 })
+      const heartbeat = startRuntimeLeaseHeartbeat(
+        first,
+        { name: 'listener', owner: 'owner-a', ttlMinutes: 1 },
+        { intervalMs: 1000 },
+      )
+
+      vi.advanceTimersByTime(1000)
+      expect(readRuntimeLease(first, 'listener')).toEqual(
+        expect.objectContaining({ owner: 'owner-a', state: 'active' }),
+      )
+
+      expect(releaseRuntimeLease(second, { name: 'listener', owner: 'owner-a' })).toBe(true)
+      vi.advanceTimersByTime(1000)
+      expect(() => heartbeat.assertOwned()).toThrow('backbone_listener_lock_lost:listener')
+      heartbeat.stop()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

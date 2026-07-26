@@ -103,7 +103,12 @@ process.exit(1)
   })
 
   it('runs the current deterministic CLI workflow against a clean data directory', async () => {
+    const unavailableHealth = await runCli(['healthcheck'], dataDir)
+    expect(unavailableHealth.code).toBe(1)
+    expect(unavailableHealth.output).toContain('healthcheck_storage_unavailable')
     await expectCliOk(['setup'], dataDir)
+    const health = await expectCliOk(['healthcheck'], dataDir)
+    expect(health).toContain('database integrity')
     const initialDoctor = await expectCliOk(['doctor'], dataDir)
     await expectCliOk(['seed-demo'], dataDir)
     await expectCliOk(['ingest', 'invoice', join(fixturesDir, 'smoke-invoice.csv')], dataDir)

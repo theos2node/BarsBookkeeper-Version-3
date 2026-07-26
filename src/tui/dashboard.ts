@@ -8,6 +8,7 @@ import { seedFieldDemoRun } from '../db/fieldDemo.js'
 import { generateForecasts } from '../forecast/index.js'
 import { generateVendorGroupedOrderRecommendations } from '../orders/index.js'
 import { readUsageSummary, type UsageSummary } from '../openclaw/usage.js'
+import { escapeBlessedText } from './blessed-text.js'
 
 type DashboardState = {
   summary: Record<string, string | number>
@@ -139,7 +140,7 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
       render()
       setStatus(`updated ${new Date().toLocaleTimeString()}`)
     } catch (error) {
-      detail.setContent(`{red-fg}Error{/red-fg}\n${error instanceof Error ? error.message : String(error)}`)
+      detail.setContent(`{red-fg}Error{/red-fg}\n${escapeBlessedText(error instanceof Error ? error.message : String(error))}`)
       setStatus('error')
     } finally {
       busy = false
@@ -161,7 +162,7 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
       await refresh('workflow complete, refreshing')
     } catch (error) {
       busy = false
-      detail.setContent(`{red-fg}Workflow failed{/red-fg}\n${error instanceof Error ? error.message : String(error)}`)
+      detail.setContent(`{red-fg}Workflow failed{/red-fg}\n${escapeBlessedText(error instanceof Error ? error.message : String(error))}`)
       setStatus('workflow failed')
     }
   }
@@ -174,7 +175,7 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
       const result = await withDb(config, (db) => seedFieldDemoRun(db))
       busy = false
       await refresh('simulation complete, refreshing')
-      detail.setContent(`{bold}Simulated workflow complete{/bold}\n${JSON.stringify(result, null, 2)}`)
+      detail.setContent(`{bold}Simulated workflow complete{/bold}\n${escapeBlessedText(JSON.stringify(result, null, 2))}`)
     } catch (error) {
       busy = false
       detail.setContent(`{red-fg}Simulation failed{/red-fg}\n${error instanceof Error ? error.message : String(error)}`)
@@ -184,7 +185,7 @@ export const launchDashboard = async (config: AppConfig): Promise<void> => {
 
   const render = (): void => {
     if (!currentState) return
-    usageBox.setContent(usageContent(currentState.usage))
+    usageBox.setContent(escapeBlessedText(usageContent(currentState.usage)))
     nav.select(panels.indexOf(activePanel))
     main.setLabel(` ${activePanel} `)
     const rows = tableFor(activePanel, currentState)
@@ -372,7 +373,11 @@ const renderTextTable = (rows: string[][], maxWidth = 100): string => {
   return rows
     .map((row, index) =>
       row
-        .map((cell, column) => pad(truncate(plain(cell), widths[column] ?? 12), widths[column] ?? 12))
+        .map((cell, column) =>
+          escapeBlessedText(
+            pad(truncate(plain(cell), widths[column] ?? 12), widths[column] ?? 12),
+          ),
+        )
         .join(' | ')
         .replace(/^(.+)$/, index === 0 ? '{cyan-fg}{bold}$1{/bold}{/cyan-fg}' : '$1'),
     )
@@ -419,5 +424,5 @@ const detailFor = (panel: PanelName, state: DashboardState): string => {
     ].join('\n')
   }
   const rows = state[panel.toLowerCase() as keyof Omit<DashboardState, 'summary'>] as Array<Record<string, string | number>>
-  return rows.length > 0 ? JSON.stringify(rows[0], null, 2) : 'No rows.'
+  return rows.length > 0 ? escapeBlessedText(JSON.stringify(rows[0], null, 2)) : 'No rows.'
 }

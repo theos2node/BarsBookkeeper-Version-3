@@ -16,6 +16,7 @@ The project follows semantic versioning.
   rendering, and Backbone option parsing from command orchestration.
 - Adding Docker, systemd, deployment, architecture, and security documentation.
 - Moving optional Codex prompts to ephemeral read-only stdin invocations.
+- Moving to TypeScript 7 and aligning the declared npm release toolchain.
 
 ### Fixed
 
@@ -27,6 +28,12 @@ The project follows semantic versioning.
   process-visible command flags.
 - Made decision application/reversal, listener ownership, ingest replay, and
   snapshot verification concurrency- and integrity-safe.
+- Isolated model subprocesses from application credentials, preserved
+  multi-line invoice/count imports, separated shipment quantities from vendor
+  pack metadata, and serialized concurrent ingest/backfill work.
+- Added continuous lease heartbeats, locked concurrent usage accounting,
+  strict CSV validation, strict container health checks, and inert TUI data
+  rendering.
 
 ## [0.3.0] - 2026-07-26
 

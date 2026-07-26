@@ -24,6 +24,7 @@ npm link
 bbk --version
 bbk setup
 bbk doctor
+bbk healthcheck
 ```
 
 For an upgrade:
@@ -86,8 +87,9 @@ The container defaults to `OPENCLAW_USE_CODEX=0`. Enabling Codex inside a
 container requires separately installing the CLI and mounting its
 authentication state; that is intentionally outside the stock image.
 
-The image health check runs `bbk doctor`. Inspect operational prediction and
-listener health with:
+The image health check runs strict `bbk healthcheck`, which exits nonzero if
+the data directories, SQLite integrity, or schema version are not ready.
+Inspect operational prediction and listener health with:
 
 ```sh
 docker exec bars-bookkeeper node dist/cli/index.js backbone trust
@@ -141,18 +143,20 @@ a dedicated, separately reviewed service authentication design.
 Generate LaunchAgent files from the current built or source installation:
 
 ```sh
-npm run bbk -- backbone service --interval-ms 300000
-npm run bbk -- backbone maintain-service --interval-ms 86400000
+BBK_ENV_FILE=/absolute/path/to/bars-bookkeeper.env \
+  npm run bbk -- backbone service --interval-ms 300000
+BBK_ENV_FILE=/absolute/path/to/bars-bookkeeper.env \
+  npm run bbk -- backbone maintain-service --interval-ms 86400000
 ```
 
 The command writes a plist under `BBK_DATA_DIR/launchd` and prints exact
 installation commands. Generated plists use absolute executable and CLI paths
-and do not embed Toast credentials.
+and embed only the environment-file path, never its Toast credentials.
 
-LaunchAgents inherit only the environment written into the plist. Prefer a
-secret-file variable with a permission-restricted file if the listener needs
-Toast credentials. Re-generate the plist after moving or rebuilding the
-project.
+LaunchAgents inherit only the environment written into the plist. Use one
+absolute `BBK_ENV_FILE` for service configuration and point any secret-file
+variables inside it at permission-restricted files. Re-generate the plist after
+moving the project, configuration file, executable, or secret files.
 
 ## Backups and recovery
 
@@ -187,7 +191,7 @@ manual recovery procedure. The CLI intentionally does not provide an automatic
 4. Run `npm ci` and `npm run build`.
 5. Verify the pre-upgrade snapshot.
 6. Start against a copied recovery environment first.
-7. Resume the base listener only after `bbk doctor` and
+7. Resume the base listener only after `bbk doctor`, `bbk healthcheck`, and
    `bbk backbone trust` pass.
 
 Schema migrations are forward-only. Application rollback does not imply a

@@ -13,6 +13,7 @@ describe('Codex provider security', () => {
     const directory = await mkdtemp(join(tmpdir(), 'bbk-codex-provider-'))
     const fakeCodex = join(directory, 'codex')
     const marker = 'sensitive-task-marker'
+    const secret = 'must-not-reach-codex'
 
     try {
       await writeFile(
@@ -25,7 +26,10 @@ console.log(JSON.stringify({
   markerInArgs: args.some((arg) => arg.includes('${marker}')),
   markerInStdin: input.includes('${marker}'),
   ephemeral: args.includes('--ephemeral'),
-  readOnly: args.includes('--sandbox') && args.includes('read-only')
+  readOnly: args.includes('--sandbox') && args.includes('read-only'),
+  secretPresent: process.env.TOAST_CLIENT_SECRET === '${secret}',
+  apiKeyPresent: process.env.OPENAI_API_KEY === '${secret}',
+  dataDirPresent: process.env.BBK_DATA_DIR === '${directory}'
 }))
 `,
         'utf8',
@@ -33,12 +37,17 @@ console.log(JSON.stringify({
       await chmod(fakeCodex, 0o755)
       vi.stubEnv('PATH', `${directory}:${process.env.PATH ?? ''}`)
       vi.stubEnv('BBK_DATA_DIR', directory)
+      vi.stubEnv('TOAST_CLIENT_SECRET', secret)
+      vi.stubEnv('OPENAI_API_KEY', secret)
 
       const result = await runCodexJson<{
         markerInArgs: boolean
         markerInStdin: boolean
         ephemeral: boolean
         readOnly: boolean
+        secretPresent: boolean
+        apiKeyPresent: boolean
+        dataDirPresent: boolean
       }>({
         model: 'test-model',
         reasoningEffort: 'low',
@@ -51,6 +60,9 @@ console.log(JSON.stringify({
         markerInStdin: true,
         ephemeral: true,
         readOnly: true,
+        secretPresent: false,
+        apiKeyPresent: false,
+        dataDirPresent: false,
       })
 
       const ledgerPath = join(directory, 'openclaw-usage.json')

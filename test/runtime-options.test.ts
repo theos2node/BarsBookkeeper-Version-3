@@ -33,6 +33,7 @@ describe('launchd deployment rendering', () => {
       label: 'com.example.<bars>',
       workingDirectory: '/tmp/bars & books',
       dataDir: '/tmp/bars',
+      envFile: '/tmp/bars & books/service.env',
       intervalMs: 500,
       stdoutPath: '/tmp/out.log',
       stderrPath: '/tmp/error.log',
@@ -40,6 +41,8 @@ describe('launchd deployment rendering', () => {
 
     expect(plist).toContain('com.example.&lt;bars&gt;')
     expect(plist).toContain('/tmp/bars &amp; books')
+    expect(plist).toContain('<key>BBK_ENV_FILE</key>')
+    expect(plist).toContain('/tmp/bars &amp; books/service.env')
     expect(plist).toContain('<string>1000</string>')
     for (const part of invocation) expect(plist).toContain(part)
   })

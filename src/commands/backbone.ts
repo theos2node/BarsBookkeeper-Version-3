@@ -24,9 +24,10 @@ import { pullToast } from '../ingest/toast.js'
 import { suggestToastRecipeMappings } from '../ingest/recipes.js'
 import {
   acquireRuntimeLease as acquireRuntimeLock,
-  heartbeatRuntimeLease as heartbeatRuntimeLock,
   readRuntimeLease as readRuntimeLock,
   releaseRuntimeLease as releaseRuntimeLock,
+  startRuntimeLeaseHeartbeat,
+  type RuntimeLeaseHeartbeat,
 } from '../runtime/lease.js'
 import { renderLaunchdPlist, renderMaintenanceLaunchdPlist } from '../runtime/launchd.js'
 import { cleanEnvName, parseOptions, type ParsedOptions } from './backbone/options.js'
@@ -208,6 +209,7 @@ type PredictionEvidence = {
   positionWarningState?: string
   countAgeDays?: number | null
   shrinkDaily?: number
+  unobservedShrink?: number
   vendorCost?: {
     vendorName?: string
     unitCost?: number | null
@@ -325,6 +327,7 @@ export const backboneService = async (args: string[], context: CommandContext): 
     label,
     workingDirectory,
     dataDir: context.config.dataDir,
+    envFile: context.config.envFiles?.[0],
     intervalMs,
     stdoutPath,
     stderrPath,
@@ -338,6 +341,7 @@ export const backboneService = async (args: string[], context: CommandContext): 
     intervalMs,
     workingDirectory,
     dataDir: context.config.dataDir,
+    envFile: context.config.envFiles?.[0] ?? '',
     stdoutPath,
     stderrPath,
   })
@@ -371,6 +375,7 @@ export const backboneMaintainService = async (args: string[], context: CommandCo
     label,
     workingDirectory,
     dataDir: context.config.dataDir,
+    envFile: context.config.envFiles?.[0],
     intervalMs,
     stdoutPath,
     stderrPath,
@@ -386,6 +391,7 @@ export const backboneMaintainService = async (args: string[], context: CommandCo
     startIntervalSeconds: Math.max(60, Math.round(intervalMs / 1000)),
     workingDirectory,
     dataDir: context.config.dataDir,
+    envFile: context.config.envFiles?.[0] ?? '',
     stdoutPath,
     stderrPath,
     maintainArgs: maintainArgs.join(' '),
@@ -2432,6 +2438,7 @@ export const backboneListen = async (args: string[], context: CommandContext): P
   let stopped = false
   let completed = 0
   let lockAcquired = false
+  let leaseHeartbeat: RuntimeLeaseHeartbeat | null = null
 
   const stop = () => {
     stopped = true
@@ -2461,19 +2468,22 @@ export const backboneListen = async (args: string[], context: CommandContext): P
       ttlMinutes: lockTtlMinutes,
     })
     lockAcquired = true
+    leaseHeartbeat = startRuntimeLeaseHeartbeat(db, {
+      name: 'backbone-listener',
+      owner: lockOwner,
+      ttlMinutes: lockTtlMinutes,
+    })
     context.terminal.status('ok', 'listener lock acquired', `${lockOwner}; ttl ${lockTtlMinutes}m`)
     while (!stopped && completed < cycles) {
-      heartbeatRuntimeLock(db, {
-        name: 'backbone-listener',
-        owner: lockOwner,
-        ttlMinutes: lockTtlMinutes,
-      })
+      leaseHeartbeat.assertOwned()
       completed += 1
       const cycleStarted = new Date().toISOString()
       const cycleId = startListenerCycle(db, cycleStarted)
       const toast = await tryPullToast(db, context, options)
+      leaseHeartbeat.assertOwned()
       try {
         const openClaw = await tryRunOpenClaw(db, context, options)
+        leaseHeartbeat.assertOwned()
         const backbone = runBackboneModel(db, {
           asOf: options.asOf,
           horizonDays: options.horizonDays,
@@ -2481,6 +2491,7 @@ export const backboneListen = async (args: string[], context: CommandContext): P
           maxFeedbackTargetAgeDays: options.maxFeedbackTargetAgeDays,
           mode: 'live',
         })
+        leaseHeartbeat.assertOwned()
         finishListenerCycle(db, cycleId, {
           status: 'completed',
           toast,
@@ -2520,15 +2531,12 @@ export const backboneListen = async (args: string[], context: CommandContext): P
       }
 
       if (stopped || completed >= cycles) break
-      heartbeatRuntimeLock(db, {
-        name: 'backbone-listener',
-        owner: lockOwner,
-        ttlMinutes: lockTtlMinutes,
-      })
+      leaseHeartbeat.assertOwned()
       await sleep(intervalMs)
     }
     context.terminal.success(`Backbone listener stopped after ${completed} cycle${completed === 1 ? '' : 's'}.`)
   } finally {
+    leaseHeartbeat?.stop()
     if (lockAcquired) releaseRuntimeLock(db, { name: 'backbone-listener', owner: lockOwner })
     process.removeListener('SIGINT', stop)
     process.removeListener('SIGTERM', stop)

@@ -5,6 +5,24 @@ import { recordOpenClawUsage } from './usage.js'
 
 const execFileAsync = promisify(execFile)
 
+const codexEnvironmentKeys = [
+  'CODEX_HOME',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LOGNAME',
+  'NO_COLOR',
+  'PATH',
+  'SHELL',
+  'TERM',
+  'TMPDIR',
+  'USER',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+] as const
+
 export type CodexStatus = {
   installed: boolean
   loggedIn: boolean
@@ -95,7 +113,7 @@ const runCodexWithPrivateStdin = (
     const timeoutMs = options.timeoutMs ?? 180_000
     const maxBufferBytes = options.maxBufferBytes ?? 8 * 1024 * 1024
     const child = spawn('codex', args, {
-      env: process.env,
+      env: codexEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let stdout = ''
@@ -138,6 +156,14 @@ const runCodexWithPrivateStdin = (
     }, timeoutMs)
     timeout.unref()
   })
+
+const codexEnvironment = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(
+    codexEnvironmentKeys.flatMap((key) => {
+      const value = process.env[key]
+      return value === undefined ? [] : [[key, value]]
+    }),
+  )
 
 export const smokeTestCodexModel = async (model: string, reasoningEffort: ModelEffort) => {
   return runCodexJson<{ ok: boolean; model: string }>({

@@ -33,4 +33,4 @@ VOLUME ["/var/lib/bars-bookkeeper"]
 ENTRYPOINT ["node", "dist/cli/index.js"]
 CMD ["doctor"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD ["node", "dist/cli/index.js", "doctor"]
+  CMD ["node", "dist/cli/index.js", "healthcheck"]
