@@ -1,13 +1,18 @@
-import { mkdirSync } from 'node:fs'
+import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 export type Db = DatabaseSync
 
 export const openDatabase = (path = ':memory:'): Db => {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
+  if (path !== ':memory:') {
+    const directory = dirname(path)
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    if (process.platform !== 'win32') chmodSync(directory, 0o700)
+  }
 
   const db = new DatabaseSync(path)
+  if (path !== ':memory:' && process.platform !== 'win32') chmodSync(path, 0o600)
   db.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;

@@ -661,6 +661,36 @@ process.exit(1)
     expect(existsSync(join(dataDir, 'barsbookkeeper.sqlite'))).toBe(true)
   }, 60_000)
 
+  it('fails closed on malformed ingest and recipe command options', async () => {
+    const unknownNoteOption = await runCli(
+      ['ingest', 'note', 'House Vodka 1L 4 bottles', '--dry-rnu'],
+      dataDir,
+    )
+    expect(unknownNoteOption.code).toBe(1)
+    expect(unknownNoteOption.output).toContain('Unknown inventory note option: --dry-rnu')
+
+    const invalidTimestamp = await runCli(
+      ['ingest', 'note', 'House Vodka 1L 4 bottles', '--as-of', 'not-a-date'],
+      dataDir,
+    )
+    expect(invalidTimestamp.code).toBe(1)
+    expect(invalidTimestamp.output).toContain('--as-of_invalid')
+
+    const unknownRecipeOption = await runCli(
+      ['toast', 'map-recipe', 'House Martini', 'House Vodka 1L', '75', 'ml', '--yeild', '2'],
+      dataDir,
+    )
+    expect(unknownRecipeOption.code).toBe(1)
+    expect(unknownRecipeOption.output).toContain('Unknown Toast recipe option: --yeild')
+
+    const extraInvoiceArgument = await runCli(
+      ['ingest', 'invoice', join(fixturesDir, 'smoke-invoice.csv'), 'unexpected'],
+      dataDir,
+    )
+    expect(extraInvoiceArgument.code).toBe(1)
+    expect(extraInvoiceArgument.output).toContain('Missing or invalid invoice path')
+  }, 60_000)
+
   it('runs the full Backbone acceptance drill in fresh isolated environments', async () => {
     await expectCliOk(['setup'], dataDir)
 

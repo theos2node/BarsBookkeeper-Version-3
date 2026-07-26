@@ -63,7 +63,7 @@ export const createCommands = (
   },
   {
     path: ['toast', 'map-recipe'],
-    usage: 'bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit> [--yield <n>]',
+    usage: 'bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit> [--yield <n>] [--category <name>]',
     summary: 'Map a Toast menu item recipe ingredient and backfill missed Toast consumption.',
     handler: toastMapRecipe,
   },

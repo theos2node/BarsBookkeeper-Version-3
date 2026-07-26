@@ -316,8 +316,10 @@ export const backboneService = async (args: string[], context: CommandContext): 
   const workingDirectory = resolve(context.cwd)
 
   context.terminal.title('Backbone launchd service')
-  await mkdir(serviceDir, { recursive: true })
-  await mkdir(logDir, { recursive: true })
+  await mkdir(serviceDir, { recursive: true, mode: 0o700 })
+  await mkdir(logDir, { recursive: true, mode: 0o700 })
+  await chmod(serviceDir, 0o700)
+  await chmod(logDir, 0o700)
 
   const plist = renderLaunchdPlist({
     label,
@@ -327,7 +329,8 @@ export const backboneService = async (args: string[], context: CommandContext): 
     stdoutPath,
     stderrPath,
   })
-  await writeFile(plistPath, plist, 'utf8')
+  await writeFile(plistPath, plist, { encoding: 'utf8', mode: 0o600 })
+  await chmod(plistPath, 0o600)
 
   context.terminal.success(`LaunchAgent plist written: ${plistPath}`)
   context.terminal.dump({
@@ -340,10 +343,10 @@ export const backboneService = async (args: string[], context: CommandContext): 
   })
   context.terminal.section('Install commands')
   context.terminal.line(`mkdir -p "$HOME/Library/LaunchAgents"`)
-  context.terminal.line(`cp "${plistPath}" "$HOME/Library/LaunchAgents/${label}.plist"`)
+  context.terminal.line(`cp ${shellArg(plistPath)} "$HOME/Library/LaunchAgents/${label}.plist"`)
   context.terminal.line(`launchctl unload "$HOME/Library/LaunchAgents/${label}.plist" 2>/dev/null || true`)
   context.terminal.line(`launchctl load "$HOME/Library/LaunchAgents/${label}.plist"`)
-  context.terminal.line(`launchctl start "${label}"`)
+  context.terminal.line(`launchctl start ${shellArg(label)}`)
 }
 
 export const backboneMaintainService = async (args: string[], context: CommandContext): Promise<void> => {
@@ -359,8 +362,10 @@ export const backboneMaintainService = async (args: string[], context: CommandCo
   const maintainArgs = buildScheduledMaintenanceArgs(options)
 
   context.terminal.title('Backbone maintenance launchd service')
-  await mkdir(serviceDir, { recursive: true })
-  await mkdir(logDir, { recursive: true })
+  await mkdir(serviceDir, { recursive: true, mode: 0o700 })
+  await mkdir(logDir, { recursive: true, mode: 0o700 })
+  await chmod(serviceDir, 0o700)
+  await chmod(logDir, 0o700)
 
   const plist = renderMaintenanceLaunchdPlist({
     label,
@@ -371,7 +376,8 @@ export const backboneMaintainService = async (args: string[], context: CommandCo
     stderrPath,
     maintainArgs,
   })
-  await writeFile(plistPath, plist, 'utf8')
+  await writeFile(plistPath, plist, { encoding: 'utf8', mode: 0o600 })
+  await chmod(plistPath, 0o600)
 
   context.terminal.success(`LaunchAgent plist written: ${plistPath}`)
   context.terminal.dump({
@@ -386,10 +392,10 @@ export const backboneMaintainService = async (args: string[], context: CommandCo
   })
   context.terminal.section('Install commands')
   context.terminal.line(`mkdir -p "$HOME/Library/LaunchAgents"`)
-  context.terminal.line(`cp "${plistPath}" "$HOME/Library/LaunchAgents/${label}.plist"`)
+  context.terminal.line(`cp ${shellArg(plistPath)} "$HOME/Library/LaunchAgents/${label}.plist"`)
   context.terminal.line(`launchctl unload "$HOME/Library/LaunchAgents/${label}.plist" 2>/dev/null || true`)
   context.terminal.line(`launchctl load "$HOME/Library/LaunchAgents/${label}.plist"`)
-  context.terminal.line(`launchctl start "${label}"`)
+  context.terminal.line(`launchctl start ${shellArg(label)}`)
 }
 
 export const backboneSnapshot = async (args: string[], context: CommandContext): Promise<void> => {

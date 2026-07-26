@@ -356,6 +356,79 @@ describe('OpenClaw and Toast prototype integration', () => {
     }
   })
 
+  it('rejects unsafe Toast endpoints and malformed option values', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'bbk-toast-options-'))
+    const config = {
+      dataDir,
+      dbPath: join(dataDir, 'barsbookkeeper.sqlite'),
+      filesDir: join(dataDir, 'files'),
+      logicModel: 'test',
+      logicReasoningEffort: 'low' as const,
+      fastModel: 'test',
+      fastReasoningEffort: 'low' as const,
+    }
+    vi.stubEnv('TOAST_API_KEY', 'test-token')
+
+    try {
+      await expect(
+        connectToast(config, [
+          '--restaurants',
+          'restaurant-1',
+          '--auth-path',
+          'https://unexpected.example/auth',
+        ]),
+      ).rejects.toThrow('toast_auth_path_invalid')
+
+      await expect(
+        connectToast(config, ['--restaurants', '--host', 'https://toast.example.test']),
+      ).rejects.toThrow('--restaurants_value_required')
+
+      await expect(
+        connectToast(config, ['--restaurants', 'restaurant-1', '--typo']),
+      ).rejects.toThrow('unknown_toast_option:--typo')
+
+      await expect(
+        pullToast(db, config, [
+          '--restaurants',
+          'restaurant-1',
+          '--max-retries',
+          '1.5',
+        ]),
+      ).rejects.toThrow('--max-retries_must_be_an_integer')
+
+      await expect(
+        pullToast(db, config, [
+          '--restaurants',
+          'restaurant-1',
+          '--start',
+          '2026-05-12T00:00:00Z',
+          '--end',
+          '2026-05-11T00:00:00Z',
+        ]),
+      ).rejects.toThrow('toast_pull_window_invalid')
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          new Response('{}', {
+            status: 200,
+            headers: { 'content-length': String(51 * 1024 * 1024) },
+          }),
+        ),
+      )
+      await expect(
+        pullToast(db, config, [
+          '--restaurants',
+          'restaurant-1',
+          '--max-retries',
+          '0',
+        ]),
+      ).rejects.toThrow('toast_orders_response_too_large')
+    } finally {
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
   it('creates review tasks from missing Toast recipes and at-risk inventory', async () => {
     seedDemoData(db, '2026-05-11T12:00:00.000Z')
     ingestToastSales(db, [

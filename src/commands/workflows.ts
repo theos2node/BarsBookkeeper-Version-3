@@ -1,8 +1,15 @@
-import { readFile } from 'node:fs/promises'
+import { parseIsoInstant } from '../core/clock.js'
+import { readUtf8FileLimited } from '../core/files.js'
+import { boundedText, finiteNumber } from '../core/validation.js'
 import { parseJson, toNumber, toStringValue } from '../db/database.js'
 import { ingestInventoryNotes } from '../ingest/notes.js'
 import { mapToastRecipeAndBackfill } from '../ingest/recipes.js'
-import { OperatorInputError, runServiceCommand, requirePathArg } from './service-command.js'
+import {
+  OperatorInputError,
+  requireNoArgs,
+  requirePathArg,
+  runServiceCommand,
+} from './service-command.js'
 import { BackendUnavailableError, callBackend, withBackendDb } from './backend.js'
 import type { CommandContext } from './types.js'
 
@@ -15,7 +22,10 @@ export const ingestInvoice = async (args: string[], context: CommandContext): Pr
     modules: ['../ingest/invoices.js', '../ingest/invoice.js', '../ingest/index.js'],
     exports: ['ingestInvoices', 'ingestInvoice', 'ingestInvoiceFile', 'importInvoice'],
     withDb: true,
-    args: async (rawArgs, ctx, { db }) => [db, await readFile(requirePathArg(rawArgs, 'invoice', ctx), 'utf8')],
+    args: async (rawArgs, ctx, { db }) => [
+      db,
+      await readUtf8FileLimited(requirePathArg(rawArgs, 'invoice', ctx), 'invoice'),
+    ],
   })
 
 export const ingestCount = async (args: string[], context: CommandContext): Promise<void> =>
@@ -27,7 +37,10 @@ export const ingestCount = async (args: string[], context: CommandContext): Prom
     modules: ['../ingest/counts.js', '../ingest/count.js', '../ingest/index.js'],
     exports: ['ingestCounts', 'ingestCount', 'ingestCountFile', 'importCount'],
     withDb: true,
-    args: async (rawArgs, ctx, { db }) => [db, await readFile(requirePathArg(rawArgs, 'count', ctx), 'utf8')],
+    args: async (rawArgs, ctx, { db }) => [
+      db,
+      await readUtf8FileLimited(requirePathArg(rawArgs, 'count', ctx), 'count'),
+    ],
   })
 
 export const ingestNote = async (args: string[], context: CommandContext): Promise<void> => {
@@ -96,8 +109,9 @@ export const toastMapRecipe = async (args: string[], context: CommandContext): P
   })
 }
 
-export const brainRun = async (args: string[], context: CommandContext): Promise<void> =>
-  runServiceCommand(args, context, {
+export const brainRun = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk brain run')
+  return runServiceCommand(args, context, {
     title: 'Brain run',
     started: 'Looking for reasoning service...',
     done: 'Brain run completed.',
@@ -106,9 +120,11 @@ export const brainRun = async (args: string[], context: CommandContext): Promise
     exports: ['runBrain', 'reconcileInventory', 'runOpenClawBrain'],
     args: (_rawArgs, ctx) => [ctx.config],
   })
+}
 
-export const forecastRun = async (args: string[], context: CommandContext): Promise<void> =>
-  runServiceCommand(args, context, {
+export const forecastRun = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk forecast run')
+  return runServiceCommand(args, context, {
     title: 'Forecast run',
     started: 'Looking for forecast service...',
     done: 'Forecast run completed.',
@@ -118,9 +134,11 @@ export const forecastRun = async (args: string[], context: CommandContext): Prom
     withDb: true,
     args: (_rawArgs, _ctx, { db }) => [db],
   })
+}
 
-export const ordersGenerate = async (args: string[], context: CommandContext): Promise<void> =>
-  runServiceCommand(args, context, {
+export const ordersGenerate = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk orders generate')
+  return runServiceCommand(args, context, {
     title: 'Generate orders',
     started: 'Looking for order recommendation service...',
     done: 'Order generation completed.',
@@ -130,6 +148,7 @@ export const ordersGenerate = async (args: string[], context: CommandContext): P
     withDb: true,
     args: (_rawArgs, _ctx, { db }) => [db],
   })
+}
 
 export const review = async (args: string[], context: CommandContext): Promise<void> => {
   context.terminal.title('Review queue')
@@ -238,23 +257,31 @@ const parseNoteArgs = async (
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
-    const next = args[index + 1]
-    if (arg === '--file' && next) {
-      file = next
-      index += 1
-    } else if (arg === '--as-of' && next) {
-      occurredAt = next
-      index += 1
+    if (arg === '--file' || arg.startsWith('--file=')) {
+      if (file) throw new OperatorInputError('Duplicate --file option.')
+      const parsed = optionValue(args, index, '--file')
+      file = parsed.value
+      index = parsed.nextIndex
+    } else if (arg === '--as-of' || arg.startsWith('--as-of=')) {
+      if (occurredAt) throw new OperatorInputError('Duplicate --as-of option.')
+      const parsed = optionValue(args, index, '--as-of')
+      occurredAt = parseIsoInstant(parsed.value, '--as-of')
+      index = parsed.nextIndex
     } else if (arg === '--dry-run') {
       dryRun = true
+    } else if (arg.startsWith('--')) {
+      throw new OperatorInputError(`Unknown inventory note option: ${arg}`)
     } else {
       values.push(arg)
     }
   }
 
+  if (file && values.length > 0) {
+    throw new OperatorInputError('Use either --file or inline inventory note text, not both.')
+  }
   const text = file
-    ? await readFile(requirePathArg([file], 'note', context), 'utf8')
-    : values.join(' ').trim()
+    ? await readUtf8FileLimited(requirePathArg([file], 'note', context), 'inventory_note', 2 * 1024 * 1024)
+    : boundedText(values.join(' '), 'inventory_note', { maxLength: 2 * 1024 * 1024 })
 
   if (!text) {
     throw new OperatorInputError(
@@ -309,33 +336,54 @@ const parseRecipeMapArgs = (args: string[]) => {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
-    const next = args[index + 1]
-    if (arg === '--yield' && next) {
-      yieldQuantity = toNumber(next)
-      index += 1
-    } else if (arg === '--category' && next) {
-      category = next
-      index += 1
+    if (arg === '--yield' || arg.startsWith('--yield=')) {
+      const parsed = optionValue(args, index, '--yield')
+      yieldQuantity = finiteNumber(parsed.value, '--yield', { min: Number.EPSILON })
+      index = parsed.nextIndex
+    } else if (arg === '--category' || arg.startsWith('--category=')) {
+      const parsed = optionValue(args, index, '--category')
+      category = boundedText(parsed.value, '--category', { required: true, maxLength: 120 })
+      index = parsed.nextIndex
+    } else if (arg.startsWith('--')) {
+      throw new OperatorInputError(`Unknown Toast recipe option: ${arg}`)
     } else {
       values.push(arg)
     }
   }
 
   const [menuItemName, skuName, quantityRaw, unit] = values
-  const quantity = toNumber(quantityRaw)
-  if (!menuItemName || !skuName || !quantityRaw || !unit || quantity <= 0) {
+  if (values.length !== 4 || !menuItemName || !skuName || !quantityRaw || !unit) {
     throw new OperatorInputError(
       'Missing or invalid Toast recipe map arguments.',
       'usage: bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit> [--yield <n>] [--category <name>]',
     )
   }
+  const quantity = finiteNumber(quantityRaw, 'recipe_quantity', { min: Number.EPSILON })
 
   return {
-    menuItemName,
-    skuName,
+    menuItemName: boundedText(menuItemName, 'menu_item_name', { required: true, maxLength: 240 }),
+    skuName: boundedText(skuName, 'sku_name', { required: true, maxLength: 240 }),
     quantity,
-    unit,
+    unit: boundedText(unit, 'recipe_unit', { required: true, maxLength: 80 }),
     yieldQuantity,
     category,
   }
+}
+
+const optionValue = (
+  args: string[],
+  index: number,
+  flag: string,
+): { value: string; nextIndex: number } => {
+  const arg = args[index]
+  if (arg.startsWith(`${flag}=`)) {
+    const value = arg.slice(flag.length + 1)
+    if (!value) throw new OperatorInputError(`${flag} requires a value.`)
+    return { value, nextIndex: index }
+  }
+  const value = args[index + 1]
+  if (!value || value.startsWith('--')) {
+    throw new OperatorInputError(`${flag} requires a value.`)
+  }
+  return { value, nextIndex: index + 1 }
 }

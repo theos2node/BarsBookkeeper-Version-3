@@ -1,17 +1,22 @@
 import { execFile } from 'node:child_process'
-import { mkdir, stat } from 'node:fs/promises'
+import { chmod, mkdir, stat } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { callBackend, BackendUnavailableError, withBackendDb } from './backend.js'
-import { runServiceCommand } from './service-command.js'
+import { requireNoArgs, runServiceCommand } from './service-command.js'
 import type { CommandContext } from './types.js'
 
 const execFileAsync = promisify(execFile)
 
-export const setup = async (_args: string[], context: CommandContext): Promise<void> => {
+export const setup = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk setup')
   const { terminal, config } = context
   terminal.title('Bars Bookkeeper setup')
-  await mkdir(config.dataDir, { recursive: true })
-  await mkdir(config.filesDir, { recursive: true })
+  await mkdir(config.dataDir, { recursive: true, mode: 0o700 })
+  await mkdir(config.filesDir, { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') {
+    await chmod(config.dataDir, 0o700)
+    await chmod(config.filesDir, 0o700)
+  }
   terminal.success(`Data directory ready: ${config.dataDir}`)
   terminal.success(`File store ready: ${config.filesDir}`)
 
@@ -19,8 +24,9 @@ export const setup = async (_args: string[], context: CommandContext): Promise<v
   terminal.success('Database ready.')
 }
 
-export const seedDemo = async (args: string[], context: CommandContext): Promise<void> =>
-  runServiceCommand(args, context, {
+export const seedDemo = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk seed-demo')
+  return runServiceCommand(args, context, {
     title: 'Seed demo data',
     started: 'Looking for demo seed service...',
     done: 'Demo data seed completed.',
@@ -30,9 +36,11 @@ export const seedDemo = async (args: string[], context: CommandContext): Promise
     withDb: true,
     args: (_rawArgs, _context, { db }) => [db],
   })
+}
 
-export const seedFieldDemo = async (args: string[], context: CommandContext): Promise<void> =>
-  runServiceCommand(args, context, {
+export const seedFieldDemo = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk seed-field-demo')
+  return runServiceCommand(args, context, {
     title: 'Seed field demo',
     started: 'Generating field-style invoices, Toast sales, counts, forecasts, and orders...',
     done: 'Field demo workflow completed.',
@@ -42,8 +50,10 @@ export const seedFieldDemo = async (args: string[], context: CommandContext): Pr
     withDb: true,
     args: (_rawArgs, _context, { db }) => [db],
   })
+}
 
-export const doctor = async (_args: string[], context: CommandContext): Promise<void> => {
+export const doctor = async (args: string[], context: CommandContext): Promise<void> => {
+  requireNoArgs(args, 'bbk doctor')
   const { terminal, config } = context
   terminal.title('Bars Bookkeeper doctor')
 

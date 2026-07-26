@@ -36,7 +36,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
+    "check": "npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run pack:check",
     "dev": "tsx src/cli/index.ts",
     "bbk": "tsx src/cli/index.ts",
     "lint": "oxlint --deny-warnings src test",

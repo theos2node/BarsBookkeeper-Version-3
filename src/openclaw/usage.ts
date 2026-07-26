@@ -124,7 +124,9 @@ export const readUsageSummary = (): UsageSummary => {
 
 const writeUsageLedger = (ledger: UsageLedger): void => {
   const path = ledgerPath()
-  mkdirSync(dirname(path), { recursive: true })
+  const directory = dirname(path)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') chmodSync(directory, 0o700)
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`
   const boundedLedger: UsageLedger = {
     version: 1,

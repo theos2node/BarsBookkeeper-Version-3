@@ -179,7 +179,7 @@ export const reverseDecision = (db: Db, decisionId: number): number => {
 }
 
 export const dismissDecision = (db: Db, decisionId: number, reason = 'Dismissed after manager review'): number => {
-  return withTransaction(db, () => {
+  return withImmediateTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
     if (!decision) throw new Error(`decision_not_found:${decisionId}`)
     const state = toStringValue(decision.state)
@@ -188,11 +188,16 @@ export const dismissDecision = (db: Db, decisionId: number, reason = 'Dismissed 
     if (state === 'auto_applied') {
       throw new Error(`decision_already_applied:${decisionId}`)
     }
-    db.prepare(
-      `UPDATE openclaw_decisions
-       SET state = 'suppressed', updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-    ).run(decisionId)
+    const transition = db
+      .prepare(
+        `UPDATE openclaw_decisions
+         SET state = 'suppressed', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND state IN ('proposed', 'needs_review')`,
+      )
+      .run(decisionId)
+    if (toNumber(transition.changes) === 0) {
+      throw new Error(`decision_dismiss_transition_conflict:${decisionId}`)
+    }
     db.prepare(
       `INSERT INTO audit_log (actor, action, entity_type, entity_id, before_json, after_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
