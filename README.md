@@ -1,280 +1,327 @@
-# Bars Bookkeeper Version 3
+# Bars Bookkeeper
 
-Terminal-first workflow for ingesting bar inventory data, running reasoning passes, and preparing purchasing recommendations.
+[![CI](https://github.com/theos2node/BarsBookkeeper-Version-3/actions/workflows/ci.yml/badge.svg)](https://github.com/theos2node/BarsBookkeeper-Version-3/actions/workflows/ci.yml)
+[![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## CLI
+Local-first inventory intelligence and purchasing workflows for bars. Bars
+Bookkeeper turns invoices, Toast sales, and sparse hand counts into an
+auditable SQLite inventory ledger, then produces forecasts, reviewable
+decisions, and order recommendations through a terminal UI.
 
-Run the local CLI through npm while developing:
+Version 3 is an early public release candidate. Use backups, review generated
+actions, and test live integrations against a non-production data directory
+before relying on them operationally.
+
+## What it does
+
+- Imports vendor invoices, inventory counts, rough manager notes, and Toast
+  order data.
+- Preserves source evidence and idempotency keys in a local SQLite ledger.
+- Maps menu items and modifiers to ingredient consumption.
+- Predicts on-hand inventory, uncertainty ranges, stockout probability, and
+  days remaining.
+- Learns calibration corrections from later evidence-backed hand counts.
+- Builds vendor-aware purchase recommendations from as-of pricing and lead
+  times.
+- Queues decisions for review and records application, reversal, and audit
+  history.
+- Runs deterministic simulations, rolling backtests, health gates, verified
+  snapshots, and isolated restore drills.
+- Provides a full-screen terminal dashboard without requiring a hosted
+  service.
+
+## Requirements
+
+- Node.js 24 or newer
+- npm 11 or newer
+- macOS or Linux
+- Optional: a Toast integration
+- Optional: the authenticated Codex CLI for model-written reasoning summaries
+
+The inventory engine, forecasts, review workflow, and simulations run without
+Codex or any remote model.
+
+## Quick start
 
 ```sh
-npm run bbk -- doctor
+git clone https://github.com/theos2node/BarsBookkeeper-Version-3.git
+cd BarsBookkeeper-Version-3
+cp .env.example .env.local
+npm ci
+npm run build
+npm run bbk -- setup
+npm run bbk -- seed-field-demo
+npm run bbk -- console
 ```
 
-`bbk doctor` checks local paths, Codex availability, configured model smoke checks, and Backbone readiness. On a fresh install, missing Backbone runs or listener cycles are warnings with the next command to run, not hard failures.
-
-The package also exposes a `bbk` binary after build/install:
+`.env.local` and the default `data/` directory are ignored by Git. Keep
+`.env.local` private:
 
 ```sh
-npm run build
+chmod 600 .env.local
+```
+
+To expose the built binary globally while developing:
+
+```sh
+npm link
+bbk --version
 bbk doctor
 ```
 
-## Commands
+Run `bbk --help` or `npm run bbk -- --help` for the complete command list.
+
+## Core workflow
 
 ```sh
-npm run bbk -- setup
+# Validate the installation and initialize the database.
 npm run bbk -- doctor
-npm run bbk -- seed-demo
-npm run bbk -- seed-field-demo
-npm run bbk -- forecast run
-npm run bbk -- orders generate
-npm run bbk -- console
-```
+npm run bbk -- setup
 
-CSV ingest examples:
-
-```sh
-npm run bbk -- ingest invoice ./samples/invoice.csv
-npm run bbk -- ingest count ./samples/count.csv
+# Import evidence.
+npm run bbk -- ingest invoice ./invoice.csv
+npm run bbk -- ingest count ./count.csv
 npm run bbk -- ingest note "House Vodka 1L 4.5 bottles; Lime Juice 1250 ml" --dry-run
-```
 
-`bbk ingest note` turns rough manager inventory notes into sparse count evidence for Backbone. Bottle counts use the active vendor pack size for the matched SKU, so `4.5 bottles` of a 1L vodka becomes `4500 ml`; run with `--dry-run` first to preview fuzzy SKU matches and skipped fragments.
-
-Operational commands reserved for live integrations:
-
-```sh
-npm run bbk -- toast connect --restaurants <toast-restaurant-id>
-npm run bbk -- toast pull --start 2026-05-10T00:00:00.000Z --end 2026-05-11T00:00:00.000Z
-npm run bbk -- toast pull --file ./samples/toast-orders.json
-npm run bbk -- toast map-recipe "Smoke Test Martini" "House Vodka 1L" 75 ml
+# Generate reasoning, predictions, and orders.
 npm run bbk -- brain run
-npm run bbk -- backbone run
-npm run bbk -- backbone listen
-npm run bbk -- backbone service --interval-ms 300000
-npm run bbk -- backbone maintain-service --interval-ms 86400000
-npm run bbk -- backbone snapshot --label before-migration
-npm run bbk -- backbone snapshot-verify --label before-migration
-npm run bbk -- backbone snapshot-restore --label before-migration --env restore-check
-npm run bbk -- backbone maintain
-npm run bbk -- backbone maintain --verify --scenario shrink --days 60 --count-cadence-days 30
-npm run bbk -- backbone maintain-history
-npm run bbk -- backbone drift
-npm run bbk -- backbone gaps
-npm run bbk -- backbone status
-npm run bbk -- backbone verify --env acceptance --days 60
-npm run bbk -- backbone acceptance --env acceptance-drill --days 60
-npm run bbk -- backbone simulate --env test-lab --days 30
-npm run bbk -- backbone backtest --env rolling-lab --days 60
-npm run bbk -- backbone backtest-matrix --env rolling-matrix --days 60
-npm run bbk -- backbone matrix --env test-matrix --days 30
-npm run bbk -- review
-npm run bbk -- review dismiss <decision-id> "reason"
-npm run bbk -- review apply <decision-id>
-npm run bbk -- review reverse <decision-id>
-```
-
-## Backbone
-
-The Backbone model is the terminal-first prediction layer. It listens to the same SQLite event ledger built from Toast sales, invoices, and sparse hand counts, then persists each run in `backbone_runs` and `backbone_predictions`. Later hand counts are scored into `backbone_feedback` only when a recent prediction target can be matched, then rolled into recency-weighted `backbone_calibrations`, so sparse bottle counts ground the next prediction cycle instead of being treated as one-off corrections. Each prediction also carries an uncertainty band and stockout probability so sparse or stale inputs show up as operational risk instead of overconfident point estimates.
-
-```sh
 npm run bbk -- backbone run --horizon-days 7
-npm run bbk -- backbone plan --horizons 1,7,14,30
-npm run bbk -- backbone status
-npm run bbk -- backbone service --interval-ms 300000
-npm run bbk -- backbone maintain-service --interval-ms 86400000
-npm run bbk -- backbone snapshot --label nightly
-npm run bbk -- backbone snapshot-verify --label nightly
-npm run bbk -- backbone snapshot-restore --label nightly --env nightly-restore-check
-npm run bbk -- backbone maintain
-npm run bbk -- backbone maintain-history
 npm run bbk -- backbone actions
-npm run bbk -- backbone intake
-npm run bbk -- backbone recipe-suggestions
-npm run bbk -- backbone gaps
-npm run bbk -- backbone accuracy
-npm run bbk -- backbone memory
-npm run bbk -- backbone drift
-npm run bbk -- backbone explain --sku "Backbone Vodka 1L"
-npm run bbk -- backbone audit
-npm run bbk -- backbone trust
-npm run bbk -- backbone verify --env acceptance --days 60
-npm run bbk -- backbone acceptance --env acceptance-drill --days 60
-npm run bbk -- backbone verify-history
-npm run bbk -- backbone envs
-npm run bbk -- backbone env-prune --older-than-days 14
+npm run bbk -- orders generate
+
+# Review proposed inventory mutations.
+npm run bbk -- review
+npm run bbk -- review apply 42
+npm run bbk -- review reverse 42
 ```
 
-`bbk backbone actions` is the manager-facing output from the latest model run: it separates immediate low-stock order actions from cost-cutting or shrink-audit signals. Order recommendations choose active vendor items by as-of invoice-observed unit cost, then lead time, so larger packs are not rejected just because their total pack price is higher and future-dated invoice prices do not leak into earlier time-warped runs.
+Use `--dry-run` for rough notes before importing. Bottle quantities use the
+active vendor pack size for the matched SKU.
 
-Action, gap, and trust reports include command-ready next steps where possible, including sparse note templates such as `bbk ingest note "House Vodka 1L <actual bottles> bottles" --dry-run` and drill-down commands like `bbk backbone explain --sku ...`.
+## Architecture
 
-`bbk backbone plan` runs the model across multiple horizons and summarizes which bottles become risky first, so ordering can move before a low-stock item becomes urgent.
-
-`bbk backbone intake` shows how much Toast history is becoming usable ingredient consumption. It reports recipe coverage, mapped consumption events, missing-recipe backlog, conservative recipe suggestions, and recent mapped Toast consumption so blind spots are visible before they pollute predictions.
-
-`bbk backbone recipe-suggestions` turns repeated unmapped Toast sales into reviewable `toast map-recipe` candidates from known SKUs and existing recipe memory. It never mutates inventory by itself; apply a suggestion only after checking the quantity and SKU.
-
-`bbk backbone gaps` prioritizes the smallest missing inputs that would most improve the model: unmapped Toast recipes, stale or missing sparse counts, hand counts that could not be scored because prediction cadence fell behind, missing invoice/vendor costs, and risky predictions that still lack calibration memory.
-
-Backbone calibration only scores evidence-backed count adjustments from count documents or inventory-count evidence. Manual corrections still update inventory position, but they do not refresh count age or train prediction calibration unless they are tied to a real hand count.
-
-Feedback scoring uses a prediction-target freshness window, defaulting to 14 days, so old forecasts do not silently train the model from late counts. Use `--max-feedback-target-age-days <days>` on `backbone run`, `gaps`, `audit`, `trust`, or maintenance commands when testing a different prediction cadence in an isolated environment.
-
-When intake exposes an unmapped Toast item, use `bbk toast map-recipe "<menu item>" "<sku>" <quantity> <unit>`. The command stores the recipe ingredient, backfills prior unresolved Toast sale documents into inventory consumption, and suppresses the related missing-recipe review task once the backlog has been made usable.
-
-Toast order intake flattens check selections and nested modifier selections into separate sale evidence rows with stable external IDs. Modifiers keep their parent menu item in the raw evidence and multiply by the parent quantity, so mapped add-ons or sides can contribute inventory usage instead of disappearing inside the parent order.
-
-`bbk backbone accuracy` reports scored prediction feedback, bottle-count error, bias, feedback band coverage, and calibration drift. Add `--env <name>` to inspect an isolated simulation database without touching the base product database.
-
-`bbk backbone memory` shows what the model has learned from scored counts: SKU-level correction direction, bottle error, confidence adjustment, whether actual counts landed inside the prediction band, recent feedback, and current low-stock or cost risks that still lack calibration memory. Add `--env <name>` to inspect a sandbox.
-
-`bbk backbone drift` is the learning health check. It reports feedback sample count, overall bottle error, directional bias in bottle units, feedback freshness, recent-vs-prior error movement, prediction-band coverage, and the SKU drift watchlist. Add `--env <name>` for sandboxed simulations and tighten gates with `--max-bottle-mae`, `--max-bias-bottles`, or `--max-feedback-age-days`.
-
-`bbk backbone explain` opens the evidence behind a prediction: projection method, count age, uncertainty band, stockout probability, vendor costs, vendor lead time, shrink rate, and calibration inputs. Add `--sku <name>` to inspect a specific bottle and `--env <name>` to inspect a sandbox.
-
-For continuous terminal operation, run the listener. It attempts a Toast pull every cycle, runs OpenClaw review generation, and refreshes Backbone predictions. Temporary Toast failures are reported as warnings without stopping local prediction runs.
-
-```sh
-npm run bbk -- backbone listen
-npm run bbk -- backbone listen --once
-npm run bbk -- backbone listen --cycles 3 --interval-ms 1000
-npm run bbk -- backbone listen --toast-file ./samples/toast-orders.json --cycles 1
-npm run bbk -- backbone listen --skip-openclaw --cycles 1
+```mermaid
+flowchart LR
+  sources["Invoices · counts · notes · Toast"] --> ingest["Validated, idempotent ingest"]
+  ingest --> ledger[("SQLite evidence ledger")]
+  ledger --> policy["Deterministic decision policy"]
+  ledger --> backbone["Backbone prediction + calibration"]
+  policy --> review["Review queue"]
+  backbone --> actions["Stockout, cost, and order actions"]
+  review --> ledger
+  actions --> tui["CLI and terminal dashboard"]
+  ledger --> snapshots["Checksummed snapshots + isolated restores"]
 ```
 
-For unattended Mac mini operation, generate a user LaunchAgent plist:
+The CLI and TUI orchestrate modules; they do not own business rules. The
+database layer applies checksummed migrations, inventory mutations use
+transactions, listener ownership uses an atomic lease, and later count
+evidence calibrates predictions without rewriting history.
 
-```sh
-npm run bbk -- backbone service --interval-ms 300000
-npm run bbk -- backbone maintain-service --interval-ms 86400000
-npm run bbk -- backbone maintain-service --interval-ms 86400000 --verify --scenario shrink --days 60 --count-cadence-days 30
+See [Architecture](docs/architecture.md) for module boundaries, invariants,
+and data flow.
+
+## Local data and privacy
+
+`BBK_DATA_DIR` defaults to `./data`. It contains operational data and must
+never be committed:
+
+```text
+data/
+├── barsbookkeeper.sqlite
+├── backups/
+├── environments/
+├── files/
+├── launchd/
+├── logs/
+├── openclaw-usage.json
+└── toast-config.json
 ```
 
-The commands write plist and log paths under `data/`, then print the exact `launchctl` install commands. The listener service runs continuously and refreshes predictions; the maintenance service runs `bbk backbone maintain` on a fixed interval and can include `--verify` plus scenario/cadence flags for scheduled isolated accuracy drills. Neither plist embeds Toast or API secrets; use `bbk toast connect` and the normal environment/config files for credentials.
+Bars Bookkeeper has no telemetry service. Imported documents, restaurant
+identifiers, inventory events, model summaries, logs, and backups stay in the
+configured data directory unless an operator deliberately sends data to
+Toast or enables the Codex integration.
 
-Every listener cycle is written to `backbone_listener_cycles`, including Toast status, OpenClaw review count, Backbone run ID, prediction count, low-stock count, feedback count, and any failure message. On startup, the listener marks stale abandoned `running` cycles as failed before starting a new cycle; use `--recover-stale-minutes` to tune that recovery window. OpenClaw review failures are journaled as warnings without stopping the Backbone model run, so prediction refreshes can continue even when the review layer is degraded. `bbk backbone status` includes the latest listener health rows so restart/debug state is available from the terminal.
+`toast-config.json` stores only non-secret connection settings. Toast API keys
+and client secrets are accepted only through environment variables or
+permission-restricted secret files. Secret command-line flags are rejected.
+Codex prompts are sent through standard input instead of process arguments
+and model calls run ephemerally in a read-only sandbox.
 
-Only one listener is allowed to run against a database at a time. `bbk backbone listen` records a heartbeat in `backbone_runtime_locks`, rejects active duplicate listeners, and takes over stale locks after the TTL expires; use `--lock-ttl-minutes` if the listener interval needs a wider recovery window.
+Read [Security model](docs/security-model.md) before connecting production
+data. Report vulnerabilities through the process in [SECURITY.md](SECURITY.md).
 
-Successful listener pulls with a known time window update `backbone_toast_cursor`, allowing API polling to resume from the last successful Toast window instead of repeatedly asking for the same default range.
+## Configuration
 
-Toast API pulls retry transient restaurant failures by default and keep any restaurant data that succeeds. The listener does not advance the Toast cursor on a partial pull, so the missed window is retried while duplicate successful rows are ignored by ingest idempotency; a fully failed pull is still journaled as a warning so local predictions continue refreshing. Use `--max-retries <n>` and `--retry-delay-ms <ms>` with `bbk toast pull` or `bbk backbone listen` when a live integration needs different tolerance.
+Bars Bookkeeper loads `.env.local` and then `.env` from the working directory.
+Already-exported environment values take precedence. Set `BBK_ENV_FILE` to
+load one explicit file instead.
 
-Use `bbk backbone snapshot --label <name>` before risky changes or as a scheduled maintenance step. It writes a consistent SQLite backup plus a JSON manifest under `data/backups/`, including row counts, latest Backbone run metrics, latest verification summary, and Toast cursor state. Use `bbk backbone snapshot-verify --label <name>` to run SQLite integrity checks and confirm the backup matches its manifest. Use `bbk backbone snapshot-restore --label <name> --env <environment>` to restore into an isolated environment for inspection without overwriting the base database.
+Common settings:
 
-Use `bbk backbone maintain` for unattended health maintenance. It creates and verifies a SQLite snapshot, runs the operational audit, records prioritized data gaps, and persists the result in `backbone_maintenance_runs`; hard audit failures exit non-zero, while warnings and gaps are recorded for review. Add `--verify` to run an isolated validation and rolling sparse-count verification during maintenance, persist the result in `backbone_verifications`, and store the verification summary alongside the maintenance action queue. Use `bbk backbone maintain-history` to inspect recent maintenance runs after a LaunchAgent or terminal session finishes.
+```dotenv
+BBK_DATA_DIR=./data
+BBK_SKIP_MODEL_SMOKE=1
 
-Use `bbk backbone audit` as an operational trust gate. It checks for a recent listener heartbeat, fresh prediction run, listener-to-prediction linkage, evidence-backed sparse count grounding, unscored count feedback, recent listener failures, prediction coverage, low-stock signals, cost signals, feedback calibration, feedback band coverage, learning drift, and Toast cursor state. Hard failures exit non-zero; missing count, cost, calibration, drift, or cursor signals are warnings so a quiet bar day does not block operations. Use `--max-age-minutes` for listener heartbeat freshness, `--max-run-age-minutes` when prediction freshness needs a different threshold, `--max-count-age-days` for sparse bottle-count cadence, and `--max-feedback-target-age-days` for how old a prediction target may be before a later count is treated as unscored.
-
-Use `bbk backbone trust` for the compact operator view. It combines audit failures/warnings, latest verification results, uncertainty risk, calibration coverage, maintenance history, data gaps, and concrete next actions into one terminal report; hard audit failures still exit non-zero.
-
-Use `bbk backbone verify` as the acceptance gate for model redesign work. It creates fresh isolated environments, runs the validation-day simulation and rolling backtest for each scenario, and exits non-zero unless every scenario passes bottle-count accuracy, low-stock detection, cost-cutting detection, shrink detection, feedback, and calibration thresholds. Each verification run is persisted in `backbone_verifications` with uncertainty coverage and scored-feedback band coverage; use `bbk backbone verify-history` to inspect recent pass/fail history after terminal sessions end.
-
-Use `bbk backbone acceptance` when you want the whole resilience drill in one command. It creates fresh validation and rolling sandboxes, checks learning drift against sparse-count feedback, snapshots the base SQLite database, restores that snapshot into an isolated environment, persists the verification result, and exits non-zero if any gate fails.
-
-For destructive or time-warped testing, use isolated environments. Each simulation gets its own database under `data/environments/<name>/`, so multiple tests can run without touching the base product database. Backbone prediction evidence is evaluated as of the run timestamp, so future-dated counts, invoices, and invoice-observed vendor prices in a sandbox do not leak backward into earlier predictions. Existing invoice purchases are backfilled into timestamped vendor-price observations during migrations so upgraded databases get the same as-of behavior.
-
-```sh
-npm run bbk -- backbone simulate --env month-end-wrap --days 30
-npm run bbk -- backbone simulate --env busy-month --scenario busy --days 30
-npm run bbk -- backbone simulate --env shrink-month --scenario shrink --days 30
-npm run bbk -- backbone simulate --env weekend-swing --scenario volatile --days 30
-npm run bbk -- backbone simulate --env vendor-drift --scenario price-drift --days 30
-npm run bbk -- backbone simulate --env demand-surge --scenario surge --days 30
-npm run bbk -- backbone accuracy --env weekend-swing --min-samples 3
-npm run bbk -- backbone memory --env weekend-swing
-npm run bbk -- backbone verify --env acceptance-matrix --days 60 --count-cadence-days 30
-npm run bbk -- backbone acceptance --env acceptance-matrix --days 60 --count-cadence-days 30
-npm run bbk -- backbone backtest --env rolling-month --scenario volatile --days 60 --count-cadence-days 30
-npm run bbk -- backbone backtest-matrix --env rolling-month-matrix --days 60 --count-cadence-days 30
-npm run bbk -- backbone matrix --env month-end-matrix --days 30
-npm run bbk -- backbone envs
-npm run bbk -- backbone env-prune --older-than-days 14 --keep 20
-npm run bbk -- backbone env-prune --older-than-days 14 --keep 20 --force
+OPENCLAW_USE_CODEX=0
+OPENCLAW_LOGIC_MODEL=gpt-5.4
+OPENCLAW_LOGIC_REASONING_EFFORT=low
+OPENCLAW_FAST_MODEL=gpt-5.4-mini
+OPENCLAW_FAST_REASONING_EFFORT=low
 ```
 
-The simulation creates Toast history, rough monthly manager inventory notes, invoices, vendor pricing, hidden-shrink notes through sparse counts, and a validation day. It passes only when bottle-count error, low-stock detection, uncertainty-band coverage, cost-cutting detection, shrink detection, invoice-driven vendor savings, demand-surge adaptation, and feedback calibration all clear deterministic thresholds. `bbk backbone backtest` is stricter over time: it walks a simulated Toast timeline day by day, with sparse note snapshots on the configured cadence, then scores rolling future predictions and uncertainty bands against hidden true inventory between those notes. The matrix commands run the steady, busy, slow, shrink, volatile weekend-demand, price-drift, and surge scenarios in separate databases so multiple operating assumptions can be tested at once without touching the base product database; `backtest-matrix` does that for the rolling timeline test, and `verify` combines validation-day and rolling gates in one command. `bbk backbone env-prune` is dry-run by default; add `--force` only after reviewing the table of environments it will remove.
+Invalid reasoning levels and unsafe filesystem-root data directories fail
+closed rather than silently falling back.
 
-## Terminal Console
+## Toast integration
 
-Run the full-screen terminal dashboard:
+Configure Toast with environment variables:
 
-```sh
-npm run bbk -- console
-```
-
-Keyboard controls:
-
-- `tab` or `1`-`7`: switch views.
-- `r`: refresh.
-- `w`: run OpenClaw brain, forecasts, and orders on the current data.
-- `s`: generate a realistic simulated operating run, then refresh.
-- `q`: quit.
-
-The upper-right OpenClaw usage readout is an estimate. It tracks local Codex-backed OpenClaw calls made through this app and estimates cost from prompt/output character counts using editable model-rate defaults.
-
-Automation-friendly snapshot:
-
-```sh
-npm run bbk -- console --snapshot
-```
-
-The generated field demo creates realistic invoices, Toast sales, a manager count, review tasks, forecasts, and vendor-grouped order recommendations:
-
-```sh
-npm run bbk -- seed-field-demo
-```
-
-The CLI owns terminal UX and orchestration only. Backend work is loaded dynamically when available from `src/db`, `src/ingest`, `src/brain`, `src/forecast`, and `src/orders`. Missing backend hooks are reported as warnings instead of faking business behavior in the terminal layer.
-
-`bbk doctor` checks local data paths, Codex CLI/login status, and runs a model smoke check when a backend provider function exists.
-
-## Codex / OpenClaw
-
-Version 3 uses the local Codex CLI login rather than a checked-in API key. Run `codex login` and choose **Sign in with ChatGPT** if `bbk doctor` reports an auth problem.
-
-Default models:
-
-- Logic: `gpt-5.4` with low reasoning effort.
-- Fast: `gpt-5.4-mini` with low reasoning effort.
-
-`bbk brain run` uses deterministic OpenClaw policy rules by default so a manager can run it repeatedly without spending model calls, then runs Backbone predictions over the updated ledger. Set `OPENCLAW_USE_CODEX=1` when you want Codex to add a concise reasoning summary on top of the local policy pass.
-
-For repeated smoke testing without model calls:
-
-```sh
-BBK_SKIP_MODEL_SMOKE=1 npm run bbk -- doctor
-```
-
-## Toast
-
-Toast configuration can come from `.env`, command flags, or `data/toast-config.json` after `bbk toast connect`.
-
-Supported environment keys:
-
-```sh
+```dotenv
 TOAST_API_HOST=https://ws-api.toasttab.com
 TOAST_AUTH_PATH=/authentication/v1/authentication/login
 TOAST_SALES_PATH=/orders/v2/ordersBulk
 TOAST_RESTAURANT_EXTERNAL_IDS=restaurant-id-1,restaurant-id-2
-TOAST_CLIENT_ID=...
-TOAST_CLIENT_SECRET=...
+TOAST_CLIENT_ID=client-id
+TOAST_CLIENT_SECRET_FILE=/run/secrets/toast-client-secret
 ```
 
-The connector uses the Version 2 integration shape: machine-client auth, `Toast-Restaurant-External-ID`, and `/orders/v2/ordersBulk`. Pulled orders are flattened into Toast sale rows, then OpenClaw records the inventory decision before mutating the ledger.
-
-## Stabilization Checks
-
-The test suite includes a deterministic CLI smoke harness that runs the full local workflow against a temporary database with a fake Codex binary, so it does not spend model tokens:
+On macOS and Linux, a secret file must have mode `0600`:
 
 ```sh
-npm test
+chmod 600 /run/secrets/toast-client-secret
+npm run bbk -- toast connect
+npm run bbk -- toast pull --start 2026-05-10T00:00:00Z --end 2026-05-11T00:00:00Z
 ```
 
-Covered behaviors include setup, doctor, demo seed, invoice/count ingest, Toast file ingest, OpenClaw brain run, forecasts, order generation, console output, duplicate replay protection, and no-credential Toast failure handling.
+For offline development, import an exported Toast payload:
 
-## Local Data
+```sh
+npm run bbk -- toast pull --file ./toast-orders.json
+npm run bbk -- toast map-recipe "House Martini" "House Vodka 1L" 75 ml
+```
 
-Runtime files live under `data/` and are ignored by git. The database is SQLite at `data/barsbookkeeper.sqlite`.
+API pulls require HTTPS except for loopback test servers. Multi-restaurant
+pulls retry transient failures, retain successful rows, and advance the Toast
+cursor only after a complete pull. Replayed rows are ignored through stable
+content-derived identifiers.
+
+## Backbone operations
+
+The Backbone layer projects inventory from timestamped purchases,
+consumption, corrections, vendor prices, and count evidence. It records each
+run, prediction, uncertainty band, and later scoring result.
+
+```sh
+npm run bbk -- backbone plan --horizons 1,7,14,30
+npm run bbk -- backbone status
+npm run bbk -- backbone gaps
+npm run bbk -- backbone explain --sku "House Vodka 1L"
+npm run bbk -- backbone accuracy
+npm run bbk -- backbone drift
+npm run bbk -- backbone trust
+```
+
+For continuous operation:
+
+```sh
+npm run bbk -- backbone listen
+npm run bbk -- backbone listen --once
+npm run bbk -- backbone listen --skip-openclaw
+```
+
+Only one listener can own a database at a time. The atomic runtime lease
+prevents concurrent workers from double-processing a cycle and permits
+takeover after the heartbeat expires.
+
+For isolated validation:
+
+```sh
+npm run bbk -- backbone simulate --env steady-lab --scenario steady --days 30
+npm run bbk -- backbone backtest --env rolling-lab --scenario volatile --days 60
+npm run bbk -- backbone verify --env release-gate --days 60
+npm run bbk -- backbone acceptance --env restore-drill --days 60
+```
+
+Simulation environments get separate databases under
+`data/environments/<name>/`; they do not mutate the base database.
+
+## Backups and restore drills
+
+```sh
+npm run bbk -- backbone snapshot --label before-change
+npm run bbk -- backbone snapshot-verify --label before-change
+npm run bbk -- backbone snapshot-restore --label before-change --env restore-check
+```
+
+A snapshot includes a SQLite copy, a SHA-256 digest, schema version, operational
+counts, and a health manifest. Verification checks the digest and SQLite
+integrity without opening or mutating the stored artifact. Restore targets are
+isolated environments by design; the command never overwrites the base
+database.
+
+`bbk backbone maintain` creates and verifies a snapshot before its audit and
+data-gap gates:
+
+```sh
+npm run bbk -- backbone maintain
+npm run bbk -- backbone maintain --verify
+npm run bbk -- backbone maintain-history
+```
+
+## Deployment
+
+The application remains local-first; “deployment” means running the CLI and
+listener reproducibly on an operator-controlled machine.
+
+Supported examples are included for:
+
+- a multi-stage, non-root [Dockerfile](Dockerfile);
+- hardened Linux [systemd units](deploy/systemd);
+- generated per-user macOS LaunchAgents through `bbk backbone service` and
+  `bbk backbone maintain-service`.
+
+See [Deployment](docs/deployment.md) for installation, secret handling,
+volumes, health checks, upgrades, and rollback.
+
+## Optional Codex summaries
+
+`bbk brain run` uses deterministic policy rules by default. To add a concise
+model-written summary, install and authenticate the Codex CLI, then opt in:
+
+```sh
+codex login
+OPENCLAW_USE_CODEX=1 npm run bbk -- brain run
+```
+
+Bars Bookkeeper does not store an OpenAI API key. Codex prompts are passed over
+standard input, invocations are ephemeral, project rules are ignored, and the
+CLI sandbox is read-only. Usage and cost displays are local estimates based on
+character counts and operator-configured rates, not billing records.
+
+## Development
+
+```sh
+npm ci
+npm run check
+npm run test:coverage
+npm audit
+```
+
+`npm run check` runs linting, strict type-checking, deterministic tests, the
+production build, and a package dry run. CI repeats the release gate on Node.js
+24 for Linux and macOS.
+
+The test suite covers the CLI workflow, replay safety, malformed ingest,
+Toast retry behavior, secret handling, migration integrity, concurrent
+runtime leases, snapshot restore, model-prompt privacy, simulations, and
+decision review.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. Notable
+changes are tracked in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+MIT © Bars Bookkeeper contributors.
