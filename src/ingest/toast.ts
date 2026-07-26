@@ -64,8 +64,6 @@ const argValue = (args: string[], name: string): string | undefined => {
   return undefined
 }
 
-const hasFlag = (args: string[], name: string): boolean => args.includes(`--${name}`)
-
 const numberArg = (args: string[], name: string, fallback: number): number => {
   const value = argValue(args, name)
   if (value === undefined) return fallback

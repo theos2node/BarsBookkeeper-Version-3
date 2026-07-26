@@ -1835,6 +1835,7 @@ const buildLearningDriftSummary = (
   db: Db,
   target: string,
   thresholds: LearningDriftSummary['thresholds'],
+  referenceAt = new Date().toISOString(),
 ): LearningDriftSummary => {
   const aggregate = db
     .prepare(
@@ -1860,7 +1861,9 @@ const buildLearningDriftSummary = (
     .get()
   const feedbackSamples = toNumber(aggregate?.feedback_samples)
   const latestFeedback = aggregate?.latest_feedback ? String(aggregate.latest_feedback) : ''
-  const feedbackAgeDays = latestFeedback ? round(ageMinutes(latestFeedback) / (24 * 60), 2) : null
+  const feedbackAgeDays = latestFeedback
+    ? round(Math.max(0, new Date(referenceAt).getTime() - new Date(latestFeedback).getTime()) / (24 * 60 * 60 * 1000), 2)
+    : null
   const staleCalibrationSkus = toNumber(
     db
       .prepare(
@@ -1870,10 +1873,10 @@ const buildLearningDriftSummary = (
            SELECT 1
            FROM backbone_feedback f
            WHERE f.sku_id = c.sku_id
-             AND datetime(f.evaluated_at) >= datetime('now', '-' || ? || ' days')
+             AND datetime(f.evaluated_at) >= datetime(?, '-' || ? || ' days')
          )`,
       )
-      .get(thresholds.maxFeedbackAgeDays)?.count,
+      .get(referenceAt, thresholds.maxFeedbackAgeDays)?.count,
   )
 
   const orderedFeedback = db
@@ -3122,13 +3125,23 @@ export const backboneAcceptance = async (args: string[], context: CommandContext
       scenario,
       gate: 'validation',
       env: validation.envName,
-      ...readLearningDriftSummary(validation.envDbPath, validation.envName, driftThresholds),
+      ...readLearningDriftSummary(
+        validation.envDbPath,
+        validation.envName,
+        driftThresholds,
+        validation.result.actualAsOf,
+      ),
     },
     {
       scenario,
       gate: 'rolling',
       env: rolling.envName,
-      ...readLearningDriftSummary(rolling.envDbPath, rolling.envName, driftThresholds),
+      ...readLearningDriftSummary(
+        rolling.envDbPath,
+        rolling.envName,
+        driftThresholds,
+        rolling.result.rows.at(-1)?.targetAsOf,
+      ),
     },
   ])
   context.terminal.section('Learning drift gate')
@@ -3325,11 +3338,12 @@ const readLearningDriftSummary = (
   dbPath: string,
   target: string,
   thresholds: LearningDriftSummary['thresholds'],
+  referenceAt?: string,
 ): LearningDriftSummary => {
   const db = openDatabase(dbPath)
   try {
     migrateDatabase(db)
-    return buildLearningDriftSummary(db, target, thresholds)
+    return buildLearningDriftSummary(db, target, thresholds, referenceAt)
   } finally {
     db.close()
   }

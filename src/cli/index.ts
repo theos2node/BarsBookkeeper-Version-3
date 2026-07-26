@@ -5,6 +5,7 @@ import type { CommandContext } from '../commands/types.js'
 import { Terminal } from '../tui/output.js'
 import { parseCommand } from './parser.js'
 import { renderHelp } from './help.js'
+import { version } from '../version.js'
 
 const run = async (argv: string[], context: CommandContext): Promise<number> => {
   const commands = createCommands(run)
@@ -16,7 +17,7 @@ const run = async (argv: string[], context: CommandContext): Promise<number> => 
   }
 
   if (parsed.kind === 'version') {
-    context.terminal.line('barsbookkeeper-version-3 0.1.0')
+    context.terminal.line(`bars-bookkeeper ${version}`)
     return 0
   }
 
@@ -51,4 +52,3 @@ const main = async (): Promise<void> => {
 }
 
 await main()
-

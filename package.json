@@ -1,25 +1,64 @@
 {
-  "name": "barsbookkeeper-version-3",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@theos2node/bars-bookkeeper",
+  "version": "0.3.0",
+  "description": "Local-first inventory intelligence and purchasing workflows for bars.",
   "type": "module",
+  "license": "MIT",
+  "author": "theos2node",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/theos2node/BarsBookkeeper-Version-3.git"
+  },
+  "bugs": {
+    "url": "https://github.com/theos2node/BarsBookkeeper-Version-3/issues"
+  },
+  "homepage": "https://github.com/theos2node/BarsBookkeeper-Version-3#readme",
+  "keywords": [
+    "bar",
+    "inventory",
+    "forecasting",
+    "sqlite",
+    "toast",
+    "cli"
+  ],
+  "files": [
+    "dist",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md"
+  ],
   "bin": {
     "bbk": "./dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
     "dev": "tsx src/cli/index.ts",
     "bbk": "tsx src/cli/index.ts",
+    "lint": "oxlint --deny-warnings src test",
+    "pack:check": "npm pack --dry-run",
+    "prepack": "npm run build",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "packageManager": "npm@11.6.2",
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@types/blessed": "^0.1.27",
-    "@types/node": "^24.10.1",
-    "tsx": "^4.20.5",
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.10",
+    "oxlint": "^1.49.0",
+    "tsx": "^4.23.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "blessed": "^0.1.81"
