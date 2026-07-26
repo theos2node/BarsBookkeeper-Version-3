@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,7 @@ import { ensureMenuItem, ensureSku, upsertRecipeItem } from '../src/db/repositor
 import { seedDemoData } from '../src/db/seed.js'
 import { ingestCounts, ingestToastSales } from '../src/ingest/index.js'
 import { mapToastRecipeAndBackfill } from '../src/ingest/recipes.js'
-import { flattenToastOrders, pullToast } from '../src/ingest/toast.js'
+import { connectToast, flattenToastOrders, pullToast } from '../src/ingest/toast.js'
 
 describe('OpenClaw and Toast prototype integration', () => {
   let db: Db
@@ -21,6 +21,7 @@ describe('OpenClaw and Toast prototype integration', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
     db.close()
   })
 
@@ -232,6 +233,7 @@ describe('OpenClaw and Toast prototype integration', () => {
       return { ok: false, status: 503, json: async () => ({}) }
     })
     vi.stubGlobal('fetch', fetchMock)
+    vi.stubEnv('TOAST_API_KEY', 'test-token')
 
     try {
       const result = await pullToast(
@@ -250,8 +252,6 @@ describe('OpenClaw and Toast prototype integration', () => {
           'https://toast.example.test',
           '--restaurants',
           'retry-ok,still-down',
-          '--api-key',
-          'test-token',
           '--start',
           '2026-05-11T00:00:00.000Z',
           '--end',
@@ -272,6 +272,85 @@ describe('OpenClaw and Toast prototype integration', () => {
       expect(attempts.get('still-down')).toBe(2)
       expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'toast_sale'").get()?.count).toBe(1)
       expect(db.prepare("SELECT COUNT(*) AS count FROM inventory_events WHERE event_type = 'sale'").get()?.count).toBe(2)
+    } finally {
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('never accepts or persists Toast secrets through command-line flags', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'bbk-toast-secret-cli-'))
+    try {
+      await expect(
+        connectToast(
+          {
+            dataDir,
+            dbPath: join(dataDir, 'barsbookkeeper.sqlite'),
+            filesDir: join(dataDir, 'files'),
+            logicModel: 'test',
+            logicReasoningEffort: 'low',
+            fastModel: 'test',
+            fastReasoningEffort: 'low',
+          },
+          ['--restaurants', 'restaurant-1', '--api-key', 'do-not-persist'],
+        ),
+      ).rejects.toThrow('toast_secret_cli_flag_disabled:--api-key')
+    } finally {
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('persists only non-secret Toast settings with private file permissions', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'bbk-toast-safe-config-'))
+    vi.stubEnv('TOAST_API_KEY', 'environment-only-token')
+    try {
+      const config = {
+        dataDir,
+        dbPath: join(dataDir, 'barsbookkeeper.sqlite'),
+        filesDir: join(dataDir, 'files'),
+        logicModel: 'test',
+        logicReasoningEffort: 'low' as const,
+        fastModel: 'test',
+        fastReasoningEffort: 'low' as const,
+      }
+      const result = await connectToast(config, ['--restaurants', 'restaurant-1'])
+      const path = join(dataDir, 'toast-config.json')
+      const text = await readFile(path, 'utf8')
+      const saved = JSON.parse(text) as Record<string, unknown>
+      const info = await stat(path)
+
+      expect(result.connected).toBe(true)
+      expect(text).not.toContain('environment-only-token')
+      expect(saved).not.toHaveProperty('apiKey')
+      expect(saved).not.toHaveProperty('clientSecret')
+      if (process.platform !== 'win32') expect(info.mode & 0o077).toBe(0)
+    } finally {
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects group-readable Toast secret files', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'bbk-toast-secret-file-'))
+    const secretPath = join(dataDir, 'toast-api-key')
+    await writeFile(secretPath, 'file-token\n', { encoding: 'utf8', mode: 0o644 })
+    await chmod(secretPath, 0o644)
+    vi.stubEnv('TOAST_API_KEY_FILE', secretPath)
+    try {
+      if (process.platform !== 'win32') {
+        await expect(
+          connectToast(
+            {
+              dataDir,
+              dbPath: join(dataDir, 'barsbookkeeper.sqlite'),
+              filesDir: join(dataDir, 'files'),
+              logicModel: 'test',
+              logicReasoningEffort: 'low',
+              fastModel: 'test',
+              fastReasoningEffort: 'low',
+            },
+            ['--restaurants', 'restaurant-1'],
+          ),
+        ).rejects.toThrow('toast_api_key_file_permissions_must_be_0600')
+      }
     } finally {
       await rm(dataDir, { recursive: true, force: true })
     }

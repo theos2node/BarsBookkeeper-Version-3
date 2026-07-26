@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Bars Bookkeeper maintenance daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=10m
+Unit=bars-bookkeeper-maintenance.service
+
+[Install]
+WantedBy=timers.target

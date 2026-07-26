@@ -6,7 +6,17 @@ import {
   ensureVendor,
   type InventoryEventInput,
 } from '../db/repositories.js'
-import { lastInsertId, nowIso, parseJson, stringifyJson, toNumber, toStringValue, withTransaction, type Db } from '../db/database.js'
+import {
+  lastInsertId,
+  nowIso,
+  parseJson,
+  stringifyJson,
+  toNumber,
+  toStringValue,
+  withImmediateTransaction,
+  withTransaction,
+  type Db,
+} from '../db/database.js'
 
 export type OpenClawDecisionInput = {
   title: string
@@ -68,11 +78,16 @@ export const createDecision = (db: Db, input: OpenClawGenericDecisionInput): num
 }
 
 export const markDecisionApplied = (db: Db, decisionId: number, eventId: number): void => {
-  db.prepare(
-    `UPDATE openclaw_decisions
-     SET state = 'auto_applied', applied_inventory_event_id = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?`,
-  ).run(eventId, decisionId)
+  const result = db
+    .prepare(
+      `UPDATE openclaw_decisions
+       SET state = 'auto_applied', applied_inventory_event_id = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND applied_inventory_event_id IS NULL
+         AND state IN ('proposed', 'needs_review', 'auto_applied')`,
+    )
+    .run(eventId, decisionId)
+  if (toNumber(result.changes) === 0) throw new Error(`decision_apply_transition_conflict:${decisionId}`)
   db.prepare(
     `INSERT INTO audit_log (actor, action, entity_type, entity_id, after_json)
      VALUES (?, ?, ?, ?, ?)`,
@@ -126,7 +141,7 @@ export const applyDecision = (db: Db, input: OpenClawDecisionInput): number => {
 }
 
 export const reverseDecision = (db: Db, decisionId: number): number => {
-  return withTransaction(db, () => {
+  return withImmediateTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
     if (!decision) throw new Error(`decision_not_found:${decisionId}`)
     const state = toStringValue(decision.state)
@@ -142,15 +157,19 @@ export const reverseDecision = (db: Db, decisionId: number): number => {
       quantity: -toNumber(event.quantity),
       unit: toStringValue(event.unit, 'unit'),
       decisionId,
-      occurredAt: toStringValue(event.occurred_at, nowIso()),
+      occurredAt: nowIso(),
       note: `Reverse decision ${decisionId}`,
       reversedEventId: eventId,
     })
-    db.prepare(
-      `UPDATE openclaw_decisions
-       SET state = 'reversed', reversed_at = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-    ).run(nowIso(), decisionId)
+    const reversedAt = nowIso()
+    const transition = db
+      .prepare(
+        `UPDATE openclaw_decisions
+         SET state = 'reversed', reversed_at = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND state = 'auto_applied' AND reversed_at IS NULL`,
+      )
+      .run(reversedAt, decisionId)
+    if (toNumber(transition.changes) === 0) throw new Error(`decision_reverse_transition_conflict:${decisionId}`)
     db.prepare(
       `INSERT INTO audit_log (actor, action, entity_type, entity_id, before_json, after_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -193,11 +212,18 @@ export const isInventoryMutationPayload = (payload: Record<string, unknown>): bo
   const eventType = toStringValue(payload.eventType)
   const skuName = toStringValue(payload.skuName)
   const quantity = toNumber(payload.quantity)
-  return Boolean(eventType && skuName && quantity !== 0)
+  const knownEvent = ['purchase', 'sale', 'adjustment', 'shrink', 'correction'].includes(eventType)
+  const validDirection =
+    eventType === 'purchase'
+      ? quantity > 0
+      : eventType === 'sale' || eventType === 'shrink'
+        ? quantity < 0
+        : quantity !== 0
+  return Boolean(knownEvent && skuName && validDirection)
 }
 
 export const applyExistingDecision = (db: Db, decisionId: number): number => {
-  return withTransaction(db, () => {
+  return withImmediateTransaction(db, () => {
     const decision = db.prepare('SELECT * FROM openclaw_decisions WHERE id = ?').get(decisionId)
     if (!decision) throw new Error(`decision_not_found:${decisionId}`)
     const state = toStringValue(decision.state)

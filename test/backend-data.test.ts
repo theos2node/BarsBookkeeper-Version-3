@@ -54,6 +54,11 @@ describe('backend data slice', () => {
     )
   })
 
+  it('detects mutation of an already-applied database migration', () => {
+    db.prepare("UPDATE schema_migrations SET checksum = 'tampered' WHERE id = 1").run()
+    expect(() => migrateDatabase(db)).toThrow('migration_checksum_mismatch:1')
+  })
+
   it('seeds demo operating data', () => {
     seedDemoData(db, asOf)
 
@@ -97,6 +102,48 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     const skuId = ensureSku(db, { name: 'House Vodka 1L', unit: 'ml' })
     const position = getInventoryPosition(db, skuId, { asOf: '2026-05-11T16:00:00.000Z' })
     expect(position?.onHand).toBe(5200)
+  })
+
+  it('derives replay-stable IDs when source rows have no external ID', () => {
+    ensureSku(db, { name: 'Stable Vodka 1L', unit: 'ml' })
+    ensureSku(db, { name: 'Stable Gin 1L', unit: 'ml' })
+    const rows = [
+      {
+        occurredAt: '2026-05-11T15:00:00.000Z',
+        sku: 'Stable Vodka 1L',
+        countedQuantity: 900,
+        unit: 'ml',
+      },
+      {
+        occurredAt: '2026-05-11T15:00:00.000Z',
+        sku: 'Stable Gin 1L',
+        countedQuantity: 800,
+        unit: 'ml',
+      },
+    ]
+
+    const first = ingestCounts(db, rows)
+    const replay = ingestCounts(db, [...rows].reverse())
+
+    expect(first.recordsImported).toBe(2)
+    expect(replay.recordsImported).toBe(0)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_documents WHERE document_type = 'count'").get()?.count).toBe(2)
+  })
+
+  it('rejects malformed count values and timestamps without mutating inventory', () => {
+    const skuId = ensureSku(db, { name: 'Validated Vodka 1L', unit: 'ml' })
+    const result = ingestCounts(db, [
+      {
+        occurredAt: 'not-a-date',
+        sku: 'Validated Vodka 1L',
+        countedQuantity: 'not-a-number',
+        unit: 'ml',
+      },
+    ])
+
+    expect(result.recordsImported).toBe(0)
+    expect(result.errors).toBe(1)
+    expect(getInventoryPosition(db, skuId, { asOf })?.onHand).toBe(0)
   })
 
   it('parses rough manager notes into sparse count evidence', () => {

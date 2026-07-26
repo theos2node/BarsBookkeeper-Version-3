@@ -1,5 +1,14 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 export type ModelRate = {
   inputUsdPerMillion: number
@@ -37,6 +46,8 @@ export const defaultModelRates: Record<string, ModelRate> = {
 }
 
 const ledgerPath = (): string => resolve(process.env.BBK_DATA_DIR || './data', 'openclaw-usage.json')
+const maximumLedgerBytes = 8 * 1024 * 1024
+const maximumLedgerRecords = 10_000
 
 export const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4))
 
@@ -79,8 +90,15 @@ export const recordOpenClawUsage = (input: {
 
 export const readUsageLedger = (): UsageLedger => {
   try {
-    const parsed = JSON.parse(readFileSync(ledgerPath(), 'utf8')) as Partial<UsageLedger>
-    return { version: 1, records: Array.isArray(parsed.records) ? parsed.records as UsageRecord[] : [] }
+    const path = ledgerPath()
+    if (statSync(path).size > maximumLedgerBytes) return { version: 1, records: [] }
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<UsageLedger>
+    return {
+      version: 1,
+      records: Array.isArray(parsed.records)
+        ? parsed.records.filter(isUsageRecord).slice(-maximumLedgerRecords)
+        : [],
+    }
   } catch {
     return { version: 1, records: [] }
   }
@@ -107,5 +125,37 @@ export const readUsageSummary = (): UsageSummary => {
 const writeUsageLedger = (ledger: UsageLedger): void => {
   const path = ledgerPath()
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8')
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`
+  const boundedLedger: UsageLedger = {
+    version: 1,
+    records: ledger.records.filter(isUsageRecord).slice(-maximumLedgerRecords),
+  }
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(boundedLedger, null, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    })
+    renameSync(temporaryPath, path)
+    chmodSync(path, 0o600)
+  } finally {
+    try {
+      unlinkSync(temporaryPath)
+    } catch {
+      // The atomic rename already consumed the temporary file.
+    }
+  }
+}
+
+const isUsageRecord = (value: unknown): value is UsageRecord => {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<UsageRecord>
+  return (
+    typeof record.at === 'string' &&
+    typeof record.model === 'string' &&
+    record.source === 'codex' &&
+    Number.isFinite(record.inputTokens) &&
+    Number.isFinite(record.outputTokens) &&
+    Number.isFinite(record.estimatedUsd)
+  )
 }

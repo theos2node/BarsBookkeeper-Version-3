@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import type { AppConfig } from '../config.js'
+import { boundedText } from '../core/validation.js'
 import { openDatabase, type Db } from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
 import { ingestToastSales, type IngestResult, type ToastSalesRow } from './index.js'
@@ -20,7 +21,9 @@ type ToastConfig = {
   apiKey?: string
 }
 
-type ToastPullResult = {
+type SavedToastConfig = Omit<ToastConfig, 'clientSecret' | 'apiKey'>
+
+export type ToastPullResult = {
   configured: boolean
   restaurants: number
   failedRestaurants: number
@@ -35,18 +38,15 @@ type ToastPullOptions = {
   retryDelayMs: number
 }
 
-const defaultToastConfig = (): ToastConfig => ({
-  apiHost: process.env.TOAST_API_HOST || 'https://ws-api.toasttab.com',
-  authPath: process.env.TOAST_AUTH_PATH || '/authentication/v1/authentication/login',
-  salesPath: process.env.TOAST_SALES_PATH || '/orders/v2/ordersBulk',
-  startParam: process.env.TOAST_START_PARAM || 'startDate',
-  endParam: process.env.TOAST_END_PARAM || 'endDate',
-  restaurantExternalIds: splitCsv(process.env.TOAST_RESTAURANT_EXTERNAL_IDS || process.env.TOAST_RESTAURANT_EXTERNAL_ID || ''),
-  apiKeyHeader: process.env.TOAST_API_KEY_HEADER || 'Authorization',
-  apiKeyPrefix: process.env.TOAST_API_KEY_PREFIX || 'Bearer ',
-  clientId: process.env.TOAST_CLIENT_ID || undefined,
-  clientSecret: process.env.TOAST_CLIENT_SECRET || undefined,
-  apiKey: process.env.TOAST_API_KEY || undefined,
+const baseToastConfig = (): SavedToastConfig => ({
+  apiHost: 'https://ws-api.toasttab.com',
+  authPath: '/authentication/v1/authentication/login',
+  salesPath: '/orders/v2/ordersBulk',
+  startParam: 'startDate',
+  endParam: 'endDate',
+  restaurantExternalIds: [],
+  apiKeyHeader: 'Authorization',
+  apiKeyPrefix: 'Bearer ',
 })
 
 const splitCsv = (value: string): string[] =>
@@ -73,19 +73,78 @@ const numberArg = (args: string[], name: string, fallback: number): number => {
 
 const configPath = (config: AppConfig): string => resolve(config.dataDir, 'toast-config.json')
 
-const readSavedConfig = async (config: AppConfig): Promise<Partial<ToastConfig>> => {
+const readSavedConfig = async (config: AppConfig): Promise<Partial<SavedToastConfig>> => {
   try {
-    return JSON.parse(await readFile(configPath(config), 'utf8')) as Partial<ToastConfig>
+    const parsed = JSON.parse(await readFile(configPath(config), 'utf8')) as Record<string, unknown>
+    return {
+      apiHost: typeof parsed.apiHost === 'string' ? parsed.apiHost : undefined,
+      authPath: typeof parsed.authPath === 'string' ? parsed.authPath : undefined,
+      salesPath: typeof parsed.salesPath === 'string' ? parsed.salesPath : undefined,
+      startParam: typeof parsed.startParam === 'string' ? parsed.startParam : undefined,
+      endParam: typeof parsed.endParam === 'string' ? parsed.endParam : undefined,
+      restaurantExternalIds: Array.isArray(parsed.restaurantExternalIds)
+        ? parsed.restaurantExternalIds.filter((item): item is string => typeof item === 'string')
+        : undefined,
+      apiKeyHeader: typeof parsed.apiKeyHeader === 'string' ? parsed.apiKeyHeader : undefined,
+      apiKeyPrefix: typeof parsed.apiKeyPrefix === 'string' ? parsed.apiKeyPrefix : undefined,
+      clientId: typeof parsed.clientId === 'string' ? parsed.clientId : undefined,
+    }
   } catch {
     return {}
   }
 }
 
+const secretFromFile = async (pathValue: string | undefined, field: string): Promise<string | undefined> => {
+  if (!pathValue) return undefined
+  const path = isAbsolute(pathValue) ? pathValue : resolve(pathValue)
+  const info = await stat(path)
+  if (!info.isFile()) throw new Error(`${field}_file_invalid`)
+  if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) {
+    throw new Error(`${field}_file_permissions_must_be_0600`)
+  }
+  return boundedText((await readFile(path, 'utf8')).trim(), field, { required: true, maxLength: 16_384 })
+}
+
+const environmentSecret = async (value: string | undefined, file: string | undefined, field: string): Promise<string | undefined> =>
+  value ? boundedText(value, field, { required: true, maxLength: 16_384 }) : secretFromFile(file, field)
+
+const assertNoSecretFlags = (args: string[]): void => {
+  const blocked = args.find((arg) =>
+    ['--api-key', '--client-secret'].some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
+  )
+  if (blocked) {
+    throw new Error(
+      `toast_secret_cli_flag_disabled:${blocked.split('=')[0]}:use_environment_or_secret_file`,
+    )
+  }
+}
+
 const resolveToastConfig = async (config: AppConfig, args: string[] = []): Promise<ToastConfig> => {
+  assertNoSecretFlags(args)
   const saved = await readSavedConfig(config)
   const resolvedConfig: ToastConfig = {
-    ...defaultToastConfig(),
+    ...baseToastConfig(),
     ...saved,
+    apiHost: process.env.TOAST_API_HOST || saved.apiHost || baseToastConfig().apiHost,
+    authPath: process.env.TOAST_AUTH_PATH || saved.authPath || baseToastConfig().authPath,
+    salesPath: process.env.TOAST_SALES_PATH || saved.salesPath || baseToastConfig().salesPath,
+    startParam: process.env.TOAST_START_PARAM || saved.startParam || baseToastConfig().startParam,
+    endParam: process.env.TOAST_END_PARAM || saved.endParam || baseToastConfig().endParam,
+    restaurantExternalIds: splitCsv(
+      process.env.TOAST_RESTAURANT_EXTERNAL_IDS ||
+        process.env.TOAST_RESTAURANT_EXTERNAL_ID ||
+        saved.restaurantExternalIds?.join(',') ||
+        '',
+    ),
+    apiKeyHeader: process.env.TOAST_API_KEY_HEADER || saved.apiKeyHeader || baseToastConfig().apiKeyHeader,
+    apiKeyPrefix: process.env.TOAST_API_KEY_PREFIX ?? saved.apiKeyPrefix ?? baseToastConfig().apiKeyPrefix,
+    clientId: process.env.TOAST_CLIENT_ID || saved.clientId || undefined,
+    clientSecret: await environmentSecret(
+      process.env.TOAST_CLIENT_SECRET,
+      process.env.TOAST_CLIENT_SECRET_FILE,
+      'toast_client_secret',
+    ),
+    apiKey: await environmentSecret(process.env.TOAST_API_KEY, process.env.TOAST_API_KEY_FILE, 'toast_api_key'),
   }
 
   const restaurants = argValue(args, 'restaurant') || argValue(args, 'restaurants')
@@ -95,10 +154,38 @@ const resolveToastConfig = async (config: AppConfig, args: string[] = []): Promi
   resolvedConfig.authPath = argValue(args, 'auth-path') || resolvedConfig.authPath
   resolvedConfig.salesPath = argValue(args, 'sales-path') || resolvedConfig.salesPath
   resolvedConfig.clientId = argValue(args, 'client-id') || resolvedConfig.clientId
-  resolvedConfig.clientSecret = argValue(args, 'client-secret') || resolvedConfig.clientSecret
-  resolvedConfig.apiKey = argValue(args, 'api-key') || resolvedConfig.apiKey
+  validateToastConfig(resolvedConfig)
   return resolvedConfig
 }
+
+const validateToastConfig = (toastConfig: ToastConfig): void => {
+  const url = new URL(toastConfig.apiHost)
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1'
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
+    throw new Error('toast_api_host_must_use_https')
+  }
+  if (!/^[A-Za-z0-9-]+$/.test(toastConfig.apiKeyHeader)) throw new Error('toast_api_key_header_invalid')
+  for (const [field, value] of [
+    ['toast_auth_path', toastConfig.authPath],
+    ['toast_sales_path', toastConfig.salesPath],
+    ['toast_start_param', toastConfig.startParam],
+    ['toast_end_param', toastConfig.endParam],
+  ] as const) {
+    boundedText(value, field, { required: true, maxLength: 2_048 })
+  }
+}
+
+const savedConfig = (toastConfig: ToastConfig): SavedToastConfig => ({
+  apiHost: toastConfig.apiHost,
+  authPath: toastConfig.authPath,
+  salesPath: toastConfig.salesPath,
+  startParam: toastConfig.startParam,
+  endParam: toastConfig.endParam,
+  restaurantExternalIds: toastConfig.restaurantExternalIds,
+  apiKeyHeader: toastConfig.apiKeyHeader,
+  apiKeyPrefix: toastConfig.apiKeyPrefix,
+  clientId: toastConfig.clientId,
+})
 
 const publicConfig = (toastConfig: ToastConfig) => ({
   apiHost: toastConfig.apiHost,
@@ -117,21 +204,26 @@ export const connectToast = async (config: AppConfig, args: string[] = []) => {
       config: publicConfig(toastConfig),
     }
   }
+  await mkdir(dirname(configPath(config)), { recursive: true })
+  await writeFile(configPath(config), `${JSON.stringify(savedConfig(toastConfig), null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  })
+  await chmod(configPath(config), 0o600)
   if (!toastConfig.apiKey && (!toastConfig.clientId || !toastConfig.clientSecret)) {
     return {
       connected: false,
-      next: 'Set TOAST_CLIENT_ID and TOAST_CLIENT_SECRET, or TOAST_API_KEY for a manual token.',
+      savedTo: configPath(config),
+      next: 'Set TOAST_CLIENT_ID and TOAST_CLIENT_SECRET, TOAST_CLIENT_SECRET_FILE, TOAST_API_KEY, or TOAST_API_KEY_FILE.',
       config: publicConfig(toastConfig),
+      note: 'Only non-secret connection settings were saved.',
     }
   }
-
-  await mkdir(dirname(configPath(config)), { recursive: true })
-  await writeFile(configPath(config), `${JSON.stringify(toastConfig, null, 2)}\n`, 'utf8')
   return {
     connected: true,
     savedTo: configPath(config),
     config: publicConfig(toastConfig),
-    note: 'Credentials are stored under data/ and ignored by git.',
+    note: 'Only non-secret connection settings were saved; credentials remain outside Bars Bookkeeper.',
   }
 }
 

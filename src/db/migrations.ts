@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { Db } from './database.js'
 
 type Migration = {
@@ -463,6 +464,19 @@ const migrations: Migration[] = [
       WHERE legacy.vendor_name IS NOT NULL;
     `,
   },
+  {
+    id: 13,
+    name: 'decision_transition_uniqueness',
+    sql: `
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_events_decision_apply_once
+        ON inventory_events(decision_id)
+        WHERE decision_id IS NOT NULL AND reversed_event_id IS NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_events_reversal_once
+        ON inventory_events(reversed_event_id)
+        WHERE reversed_event_id IS NOT NULL;
+    `,
+  },
 ]
 
 export const migrateDatabase = (db: Db): void => {
@@ -470,18 +484,42 @@ export const migrateDatabase = (db: Db): void => {
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
+      checksum TEXT,
       applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `)
+  const migrationColumns = db
+    .prepare('PRAGMA table_info(schema_migrations)')
+    .all()
+    .map((row) => String(row.name))
+  if (!migrationColumns.includes('checksum')) {
+    db.exec('ALTER TABLE schema_migrations ADD COLUMN checksum TEXT')
+  }
 
   for (const migration of migrations) {
-    const existing = db.prepare('SELECT id FROM schema_migrations WHERE id = ?').get(migration.id)
-    if (existing) continue
+    const checksum = createHash('sha256').update(migration.sql).digest('hex')
+    const existing = db
+      .prepare('SELECT id, name, checksum FROM schema_migrations WHERE id = ?')
+      .get(migration.id)
+    if (existing) {
+      if (String(existing.name) !== migration.name) {
+        throw new Error(`migration_name_mismatch:${migration.id}`)
+      }
+      if (existing.checksum && String(existing.checksum) !== checksum) {
+        throw new Error(`migration_checksum_mismatch:${migration.id}`)
+      }
+      if (!existing.checksum) {
+        db.prepare('UPDATE schema_migrations SET checksum = ? WHERE id = ?').run(checksum, migration.id)
+      }
+      continue
+    }
 
     db.exec('BEGIN')
     try {
       db.exec(migration.sql)
-      db.prepare('INSERT INTO schema_migrations (id, name) VALUES (?, ?)').run(migration.id, migration.name)
+      db
+        .prepare('INSERT INTO schema_migrations (id, name, checksum) VALUES (?, ?, ?)')
+        .run(migration.id, migration.name, checksum)
       db.exec('COMMIT')
     } catch (error) {
       db.exec('ROLLBACK')

@@ -1,8 +1,16 @@
-import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { hostname } from 'node:os'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
-import { openDatabase, parseJson, stringifyJson, toNumber, type Db } from '../db/database.js'
+import { createReadStream, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { hostname, tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import {
+  openDatabase,
+  openReadonlyDatabase,
+  parseJson,
+  stringifyJson,
+  toNumber,
+  type Db,
+} from '../db/database.js'
 import { migrateDatabase } from '../db/migrations.js'
 import { defaultFeedbackTargetAgeDays, ensureBackboneEnvironment, getLatestBackboneRun, runBackboneModel, unscoredCountFeedback } from '../backbone/index.js'
 import {
@@ -14,50 +22,16 @@ import {
 import { runOpenClawBrain } from '../brain/openclaw.js'
 import { pullToast } from '../ingest/toast.js'
 import { suggestToastRecipeMappings } from '../ingest/recipes.js'
+import {
+  acquireRuntimeLease as acquireRuntimeLock,
+  heartbeatRuntimeLease as heartbeatRuntimeLock,
+  readRuntimeLease as readRuntimeLock,
+  releaseRuntimeLease as releaseRuntimeLock,
+} from '../runtime/lease.js'
+import { renderLaunchdPlist, renderMaintenanceLaunchdPlist } from '../runtime/launchd.js'
+import { cleanEnvName, parseOptions, type ParsedOptions } from './backbone/options.js'
 import { withBackendDb } from './backend.js'
 import type { CommandContext } from './types.js'
-
-type ParsedOptions = {
-  env?: string
-  asOf?: string
-  horizonDays?: number
-  horizons?: number[]
-  usageWindowDays?: number
-  trainingDays?: number
-  days?: number
-  cycles?: number
-  once?: boolean
-  intervalMs?: number
-  toastFile?: string
-  toastStart?: string
-  toastEnd?: string
-  skipToast?: boolean
-  skipOpenClaw?: boolean
-  simulateOpenClawFailure?: boolean
-  scenario?: BackboneSimulationScenario
-  maxAgeMinutes?: number
-  maxRunAgeMinutes?: number
-  maxCountAgeDays?: number
-  maxFeedbackAgeDays?: number
-  maxFeedbackTargetAgeDays?: number
-  maxBottleMae?: number
-  maxBiasBottles?: number
-  recoverStaleMinutes?: number
-  cursorLookbackMinutes?: number
-  toastMaxRetries?: number
-  toastRetryDelayMs?: number
-  runVerify?: boolean
-  minSamples?: number
-  sku?: string
-  olderThanDays?: number
-  keep?: number
-  force?: boolean
-  limit?: number
-  countCadenceDays?: number
-  warmupDays?: number
-  label?: string
-  lockTtlMinutes?: number
-}
 
 type AuditCheck = {
   check: string
@@ -113,17 +87,6 @@ type LearningDriftSummary = {
   }
   status: 'pass' | 'warn'
   statusReason: string
-}
-
-type RuntimeLockState = {
-  present: boolean
-  name: string
-  owner: string
-  acquiredAt: string
-  heartbeatAt: string
-  expiresAt: string
-  state: 'active' | 'stale' | 'absent'
-  ageMinutes: number
 }
 
 type ToastIntakeSummary = {
@@ -460,8 +423,10 @@ export const backboneSnapshotVerify = async (args: string[], context: CommandCon
   if (!existsSync(manifestPath)) throw new Error(`backbone_snapshot_manifest_missing:${manifestPath}`)
 
   const manifest = parseJson<SnapshotManifest>(await readFile(manifestPath, 'utf8'), { counts: { backboneRuns: 0, backbonePredictions: 0, backboneVerifications: 0 } })
-  const snapshotDb = openDatabase(snapshotPath)
-  try {
+  if (typeof manifest.sha256 === 'string' && manifest.sha256 !== await sha256File(snapshotPath)) {
+    throw new Error('backbone_snapshot_digest_mismatch')
+  }
+  const verification = await inspectSnapshot(snapshotPath, (snapshotDb) => {
     const integrityRow = snapshotDb.prepare('PRAGMA integrity_check').get()
     const integrity = String(integrityRow?.integrity_check ?? '')
     const counts = {
@@ -477,21 +442,24 @@ export const backboneSnapshotVerify = async (args: string[], context: CommandCon
       countMismatch('backboneVerifications', counts.backboneVerifications, manifest.counts.backboneVerifications),
     ].filter(Boolean)
 
-    context.terminal.dump({
-      label,
-      snapshotPath,
-      manifestPath,
-      integrity,
-      ...counts,
-      manifestCreatedAt: manifest.createdAt ?? '',
-    })
+    return { integrity, counts, mismatches }
+  })
+  context.terminal.dump({
+    label,
+    snapshotPath,
+    manifestPath,
+    integrity: verification.integrity,
+    ...verification.counts,
+    manifestCreatedAt: manifest.createdAt ?? '',
+  })
 
-    if (integrity !== 'ok') throw new Error(`backbone_snapshot_integrity_failed:${integrity}`)
-    if (mismatches.length > 0) throw new Error(`backbone_snapshot_manifest_mismatch:${mismatches.join(',')}`)
-    context.terminal.success(`Snapshot ${label} verified.`)
-  } finally {
-    snapshotDb.close()
+  if (verification.integrity !== 'ok') {
+    throw new Error(`backbone_snapshot_integrity_failed:${verification.integrity}`)
   }
+  if (verification.mismatches.length > 0) {
+    throw new Error(`backbone_snapshot_manifest_mismatch:${verification.mismatches.join(',')}`)
+  }
+  context.terminal.success(`Snapshot ${label} verified.`)
 }
 
 export const backboneSnapshotRestore = async (args: string[], context: CommandContext): Promise<void> => {
@@ -1466,6 +1434,7 @@ const buildSnapshotManifest = (
     snapshotPath: string
     manifestPath: string
     sizeBytes: number
+    sha256: string
     dataDir: string
     dbPath: string
   },
@@ -1492,11 +1461,11 @@ const buildSnapshotManifest = (
   return {
     label: input.label,
     createdAt: new Date().toISOString(),
-    dataDir: input.dataDir,
-    dbPath: input.dbPath,
-    snapshotPath: input.snapshotPath,
-    manifestPath: input.manifestPath,
+    database: relative(input.dataDir, input.dbPath),
+    snapshot: relative(input.dataDir, input.snapshotPath),
+    manifest: relative(input.dataDir, input.manifestPath),
     sizeBytes: input.sizeBytes,
+    sha256: input.sha256,
     counts: {
       sourceDocuments: scalarCount(db, 'source_documents'),
       inventoryEvents: scalarCount(db, 'inventory_events'),
@@ -1549,16 +1518,25 @@ const createBackboneSnapshotArtifact = async (context: CommandContext, label: st
   return withBackendDb(context.config, async (db: any) => {
     db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     db.exec(`VACUUM INTO '${sqlString(snapshotPath)}'`)
+    await chmod(snapshotPath, 0o600)
     const snapshotStat = await stat(snapshotPath)
-    const manifest = buildSnapshotManifest(db, {
-      label,
-      snapshotPath,
-      manifestPath,
-      sizeBytes: snapshotStat.size,
-      dataDir: context.config.dataDir,
-      dbPath: context.config.dbPath,
+    const sha256 = await sha256File(snapshotPath)
+    const manifest = await inspectSnapshot(snapshotPath, (snapshotDb) =>
+      buildSnapshotManifest(snapshotDb, {
+        label,
+        snapshotPath,
+        manifestPath,
+        sizeBytes: snapshotStat.size,
+        sha256,
+        dataDir: context.config.dataDir,
+        dbPath: context.config.dbPath,
+      }),
+    )
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
     })
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+    await chmod(manifestPath, 0o600)
 
     return {
       label,
@@ -1627,8 +1605,10 @@ const countMismatch = (name: string, actual: number, expected: number | undefine
 
 const assertSnapshotReadable = async (snapshotPath: string, manifestPath: string): Promise<void> => {
   const manifest = parseJson<SnapshotManifest>(await readFile(manifestPath, 'utf8'), { counts: { backboneRuns: 0, backbonePredictions: 0, backboneVerifications: 0 } })
-  const snapshotDb = openDatabase(snapshotPath)
-  try {
+  if (typeof manifest.sha256 === 'string' && manifest.sha256 !== await sha256File(snapshotPath)) {
+    throw new Error('backbone_snapshot_digest_mismatch')
+  }
+  await inspectSnapshot(snapshotPath, (snapshotDb) => {
     const integrity = String(snapshotDb.prepare('PRAGMA integrity_check').get()?.integrity_check ?? '')
     const mismatches = [
       countMismatch('backboneRuns', scalarCount(snapshotDb, 'backbone_runs'), manifest.counts.backboneRuns),
@@ -1637,116 +1617,32 @@ const assertSnapshotReadable = async (snapshotPath: string, manifestPath: string
     ].filter(Boolean)
     if (integrity !== 'ok') throw new Error(`backbone_snapshot_integrity_failed:${integrity}`)
     if (mismatches.length > 0) throw new Error(`backbone_snapshot_manifest_mismatch:${mismatches.join(',')}`)
+  })
+}
+
+const inspectSnapshot = async <T>(snapshotPath: string, inspect: (db: Db) => T): Promise<T> => {
+  const directory = await mkdtemp(join(tmpdir(), 'bbk-snapshot-inspect-'))
+  const copyPath = join(directory, 'snapshot.sqlite')
+  try {
+    await copyFile(snapshotPath, copyPath)
+    const db = openReadonlyDatabase(copyPath)
+    try {
+      return inspect(db)
+    } finally {
+      db.close()
+    }
   } finally {
-    snapshotDb.close()
+    await rm(directory, { recursive: true, force: true })
   }
 }
 
+const sha256File = async (path: string): Promise<string> => {
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(path)) hash.update(chunk)
+  return hash.digest('hex')
+}
+
 const sqlString = (value: string): string => value.replace(/'/g, "''")
-
-const renderLaunchdPlist = (input: {
-  label: string
-  workingDirectory: string
-  dataDir: string
-  intervalMs: number
-  stdoutPath: string
-  stderrPath: string
-}): string => {
-  const intervalMs = Math.max(1000, input.intervalMs)
-  const args = [
-    '/usr/bin/env',
-    'npm',
-    'run',
-    'bbk',
-    '--',
-    'backbone',
-    'listen',
-    '--interval-ms',
-    String(intervalMs),
-  ]
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${xmlEscape(input.label)}</string>
-  <key>WorkingDirectory</key>
-  <string>${xmlEscape(input.workingDirectory)}</string>
-  <key>ProgramArguments</key>
-  <array>
-${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>BBK_DATA_DIR</key>
-    <string>${xmlEscape(input.dataDir)}</string>
-    <key>OPENCLAW_USE_CODEX</key>
-    <string>${xmlEscape(process.env.OPENCLAW_USE_CODEX ?? '0')}</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${xmlEscape(input.stdoutPath)}</string>
-  <key>StandardErrorPath</key>
-  <string>${xmlEscape(input.stderrPath)}</string>
-</dict>
-</plist>
-`
-}
-
-const renderMaintenanceLaunchdPlist = (input: {
-  label: string
-  workingDirectory: string
-  dataDir: string
-  intervalMs: number
-  stdoutPath: string
-  stderrPath: string
-  maintainArgs: string[]
-}): string => {
-  const intervalSeconds = Math.max(60, Math.round(input.intervalMs / 1000))
-  const args = [
-    '/usr/bin/env',
-    'npm',
-    'run',
-    'bbk',
-    '--',
-    'backbone',
-    'maintain',
-    ...input.maintainArgs,
-  ]
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${xmlEscape(input.label)}</string>
-  <key>WorkingDirectory</key>
-  <string>${xmlEscape(input.workingDirectory)}</string>
-  <key>ProgramArguments</key>
-  <array>
-${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>BBK_DATA_DIR</key>
-    <string>${xmlEscape(input.dataDir)}</string>
-    <key>OPENCLAW_USE_CODEX</key>
-    <string>${xmlEscape(process.env.OPENCLAW_USE_CODEX ?? '0')}</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StartInterval</key>
-  <integer>${intervalSeconds}</integer>
-  <key>StandardOutPath</key>
-  <string>${xmlEscape(input.stdoutPath)}</string>
-  <key>StandardErrorPath</key>
-  <string>${xmlEscape(input.stderrPath)}</string>
-</dict>
-</plist>
-`
-}
 
 const buildScheduledMaintenanceArgs = (options: ParsedOptions): string[] => {
   const args: string[] = []
@@ -1764,14 +1660,6 @@ const buildScheduledMaintenanceArgs = (options: ParsedOptions): string[] => {
   if (options.limit !== undefined) args.push('--limit', String(options.limit))
   return args
 }
-
-const xmlEscape = (value: string): string =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;')
 
 const withBackboneTargetDb = async <T>(
   context: CommandContext,
@@ -2492,34 +2380,6 @@ const buildUngroundedRiskRows = (db: Db, limit: number): Array<Record<string, un
     unit: row.unit,
     cost: row.cost_signal,
   }))
-}
-
-const readRuntimeLock = (db: any, name = 'backbone-listener'): RuntimeLockState => {
-  const row = db.prepare('SELECT * FROM backbone_runtime_locks WHERE name = ?').get(name)
-  if (!row) {
-    return {
-      present: false,
-      name,
-      owner: '',
-      acquiredAt: '',
-      heartbeatAt: '',
-      expiresAt: '',
-      state: 'absent',
-      ageMinutes: Number.POSITIVE_INFINITY,
-    }
-  }
-  const expiresAt = String(row.expires_at)
-  const heartbeatAt = String(row.heartbeat_at)
-  return {
-    present: true,
-    name,
-    owner: String(row.owner),
-    acquiredAt: String(row.acquired_at),
-    heartbeatAt,
-    expiresAt,
-    state: new Date(expiresAt).getTime() > Date.now() ? 'active' : 'stale',
-    ageMinutes: ageMinutes(heartbeatAt),
-  }
 }
 
 const renderListenerRuntimeLock = (db: any, context: CommandContext): void => {
@@ -3839,51 +3699,6 @@ const recoverStaleListenerCycles = (db: any, maxAgeMinutes: number): number => {
   return toNumber(result.changes)
 }
 
-const acquireRuntimeLock = (
-  db: any,
-  input: { name: string; owner: string; ttlMinutes: number },
-): void => {
-  const now = new Date()
-  const expiresAt = new Date(now.getTime() + Math.max(1, input.ttlMinutes) * 60_000).toISOString()
-  const existing = db.prepare('SELECT owner, expires_at FROM backbone_runtime_locks WHERE name = ?').get(input.name)
-  if (existing && new Date(String(existing.expires_at)).getTime() > now.getTime() && String(existing.owner) !== input.owner) {
-    throw new Error(`backbone_listener_lock_held:${existing.owner}:expires:${existing.expires_at}`)
-  }
-
-  db.prepare(
-    `INSERT INTO backbone_runtime_locks (name, owner, acquired_at, heartbeat_at, expires_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(name) DO UPDATE SET
-       owner = excluded.owner,
-       acquired_at = excluded.acquired_at,
-       heartbeat_at = excluded.heartbeat_at,
-       expires_at = excluded.expires_at`,
-  ).run(input.name, input.owner, now.toISOString(), now.toISOString(), expiresAt)
-}
-
-const heartbeatRuntimeLock = (
-  db: any,
-  input: { name: string; owner: string; ttlMinutes: number },
-): void => {
-  const now = new Date()
-  const expiresAt = new Date(now.getTime() + Math.max(1, input.ttlMinutes) * 60_000).toISOString()
-  const result = db
-    .prepare(
-      `UPDATE backbone_runtime_locks
-       SET heartbeat_at = ?, expires_at = ?
-       WHERE name = ? AND owner = ?`,
-    )
-    .run(now.toISOString(), expiresAt, input.name, input.owner)
-  if (toNumber(result.changes) === 0) throw new Error(`backbone_listener_lock_lost:${input.name}`)
-}
-
-const releaseRuntimeLock = (
-  db: any,
-  input: { name: string; owner: string },
-): void => {
-  db.prepare('DELETE FROM backbone_runtime_locks WHERE name = ? AND owner = ?').run(input.name, input.owner)
-}
-
 const finishListenerCycle = (
   db: any,
   cycleId: number,
@@ -4033,162 +3848,9 @@ const renderRun = (
   )
 }
 
-const parseOptions = (args: string[]): ParsedOptions => {
-  const parsed: ParsedOptions = {}
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]
-    const next = args[index + 1]
-    if (arg === '--env' && next) {
-      parsed.env = cleanEnvName(next)
-      index += 1
-    } else if (arg === '--as-of' && next) {
-      parsed.asOf = next
-      index += 1
-    } else if (arg === '--horizon-days' && next) {
-      parsed.horizonDays = positiveNumber(next, '--horizon-days')
-      index += 1
-    } else if (arg === '--horizons' && next) {
-      parsed.horizons = next.split(',').map((value) => positiveNumber(value.trim(), '--horizons'))
-      index += 1
-    } else if (arg === '--usage-window-days' && next) {
-      parsed.usageWindowDays = positiveNumber(next, '--usage-window-days')
-      index += 1
-    } else if (arg === '--training-days' && next) {
-      parsed.trainingDays = positiveNumber(next, '--training-days')
-      index += 1
-    } else if (arg === '--days' && next) {
-      parsed.days = positiveNumber(next, '--days')
-      index += 1
-    } else if (arg === '--cycles' && next) {
-      parsed.cycles = positiveNumber(next, '--cycles')
-      index += 1
-    } else if (arg === '--once') {
-      parsed.once = true
-      parsed.cycles = 1
-    } else if (arg === '--interval-ms' && next) {
-      parsed.intervalMs = nonNegativeNumber(next, '--interval-ms')
-      index += 1
-    } else if (arg === '--toast-file' && next) {
-      parsed.toastFile = resolve(next)
-      index += 1
-    } else if (arg === '--start' && next) {
-      parsed.toastStart = next
-      index += 1
-    } else if (arg === '--end' && next) {
-      parsed.toastEnd = next
-      index += 1
-    } else if (arg === '--skip-toast' || arg === '--no-toast') {
-      parsed.skipToast = true
-    } else if (arg === '--skip-openclaw' || arg === '--no-openclaw') {
-      parsed.skipOpenClaw = true
-    } else if (arg === '--simulate-openclaw-failure') {
-      parsed.simulateOpenClawFailure = true
-    } else if (arg === '--verify') {
-      parsed.runVerify = true
-    } else if (arg === '--scenario' && next) {
-      parsed.scenario = parseScenario(next)
-      index += 1
-    } else if (arg === '--max-age-minutes' && next) {
-      parsed.maxAgeMinutes = nonNegativeNumber(next, '--max-age-minutes')
-      index += 1
-    } else if (arg === '--max-run-age-minutes' && next) {
-      parsed.maxRunAgeMinutes = nonNegativeNumber(next, '--max-run-age-minutes')
-      index += 1
-    } else if (arg === '--max-count-age-days' && next) {
-      parsed.maxCountAgeDays = nonNegativeNumber(next, '--max-count-age-days')
-      index += 1
-    } else if (arg === '--max-feedback-age-days' && next) {
-      parsed.maxFeedbackAgeDays = nonNegativeNumber(next, '--max-feedback-age-days')
-      index += 1
-    } else if (arg === '--max-feedback-target-age-days' && next) {
-      parsed.maxFeedbackTargetAgeDays = nonNegativeNumber(next, '--max-feedback-target-age-days')
-      index += 1
-    } else if (arg === '--max-bottle-mae' && next) {
-      parsed.maxBottleMae = nonNegativeDecimal(next, '--max-bottle-mae')
-      index += 1
-    } else if (arg === '--max-bias-bottles' && next) {
-      parsed.maxBiasBottles = nonNegativeDecimal(next, '--max-bias-bottles')
-      index += 1
-    } else if (arg === '--recover-stale-minutes' && next) {
-      parsed.recoverStaleMinutes = nonNegativeNumber(next, '--recover-stale-minutes')
-      index += 1
-    } else if (arg === '--cursor-lookback-minutes' && next) {
-      parsed.cursorLookbackMinutes = positiveNumber(next, '--cursor-lookback-minutes')
-      index += 1
-    } else if (arg === '--max-retries' && next) {
-      parsed.toastMaxRetries = nonNegativeNumber(next, '--max-retries')
-      index += 1
-    } else if (arg === '--retry-delay-ms' && next) {
-      parsed.toastRetryDelayMs = nonNegativeNumber(next, '--retry-delay-ms')
-      index += 1
-    } else if (arg === '--min-samples' && next) {
-      parsed.minSamples = nonNegativeNumber(next, '--min-samples')
-      index += 1
-    } else if (arg === '--sku' && next) {
-      parsed.sku = next
-      index += 1
-    } else if (arg === '--older-than-days' && next) {
-      parsed.olderThanDays = nonNegativeNumber(next, '--older-than-days')
-      index += 1
-    } else if (arg === '--keep' && next) {
-      parsed.keep = nonNegativeNumber(next, '--keep')
-      index += 1
-    } else if (arg === '--force') {
-      parsed.force = true
-    } else if (arg === '--limit' && next) {
-      parsed.limit = positiveNumber(next, '--limit')
-      index += 1
-    } else if (arg === '--count-cadence-days' && next) {
-      parsed.countCadenceDays = positiveNumber(next, '--count-cadence-days')
-      index += 1
-    } else if (arg === '--warmup-days' && next) {
-      parsed.warmupDays = positiveNumber(next, '--warmup-days')
-      index += 1
-    } else if (arg === '--label' && next) {
-      parsed.label = next
-      index += 1
-    } else if (arg === '--lock-ttl-minutes' && next) {
-      parsed.lockTtlMinutes = positiveNumber(next, '--lock-ttl-minutes')
-      index += 1
-    }
-  }
-  return parsed
-}
-
 const round = (value: number, decimals = 3): number => Number(value.toFixed(decimals))
 
 const mean = (values: number[]): number =>
   values.length === 0 ? 0 : round(values.reduce((sum, value) => sum + value, 0) / values.length, 6)
-
-const positiveNumber = (value: string, flag: string): number => {
-  const number = toNumber(value)
-  if (number <= 0) throw new Error(`${flag}_must_be_positive`)
-  return Math.round(number)
-}
-
-const nonNegativeNumber = (value: string, flag: string): number => {
-  const number = toNumber(value)
-  if (number < 0) throw new Error(`${flag}_must_be_non_negative`)
-  return Math.round(number)
-}
-
-const nonNegativeDecimal = (value: string, flag: string): number => {
-  const number = toNumber(value)
-  if (number < 0) throw new Error(`${flag}_must_be_non_negative`)
-  return number
-}
-
-const cleanEnvName = (value: string): string => {
-  const clean = value.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80)
-  if (!clean) throw new Error('environment_name_required')
-  return clean
-}
-
-const parseScenario = (value: string): BackboneSimulationScenario => {
-  if (backboneSimulationScenarios.includes(value as BackboneSimulationScenario)) {
-    return value as BackboneSimulationScenario
-  }
-  throw new Error(`unknown_backbone_scenario:${value}`)
-}
 
 const sleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))

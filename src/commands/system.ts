@@ -1,7 +1,5 @@
 import { execFile } from 'node:child_process'
 import { mkdir, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { callBackend, BackendUnavailableError, withBackendDb } from './backend.js'
 import { runServiceCommand } from './service-command.js'
@@ -157,13 +155,7 @@ const checkCodex = async (terminal: CommandContext['terminal']): Promise<void> =
     return
   }
 
-  const authFile = resolve(homedir(), '.codex', 'auth.json')
-  try {
-    await stat(authFile)
-    terminal.status('ok', 'codex login file present', authFile)
-  } catch {
-    terminal.status('warn', 'codex login was not confirmed', 'run `codex login` if model calls fail')
-  }
+  terminal.status('warn', 'codex login was not confirmed', 'run `codex login` if model calls fail')
 }
 
 const checkModelSmoke = async (context: CommandContext): Promise<void> => {

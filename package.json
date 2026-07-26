@@ -23,9 +23,12 @@
   ],
   "files": [
     "dist",
+    "deploy",
+    ".env.example",
     "CHANGELOG.md",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "SECURITY.md"
   ],
   "bin": {
     "bbk": "./dist/cli/index.js"
