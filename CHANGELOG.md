@@ -8,15 +8,23 @@ The project follows semantic versioning.
 
 ### Changed
 
-- Preparing the Version 3 Backbone work for a reproducible open-source
+- Linked the public engine to the live product overview and clarified which
+  parts of Bars Bookkeeper are contained in this repository.
+- Moved the original release notes under the version they describe.
+
+## [0.3.0] - 2026-07-26
+
+### Changed
+
+- Prepared the Version 3 Backbone work for a reproducible open-source
   release.
-- Requiring Node.js 24 and npm 11 for the stable built-in SQLite runtime.
-- Adding lint, type, test, build, and package release gates.
-- Separating core validation, stable identifiers, runtime leases, launchd
+- Required Node.js 24 and npm 11 for the stable built-in SQLite runtime.
+- Added lint, type, test, build, and package release gates.
+- Separated core validation, stable identifiers, runtime leases, launchd
   rendering, and Backbone option parsing from command orchestration.
-- Adding Docker, systemd, deployment, architecture, and security documentation.
-- Moving optional Codex prompts to ephemeral read-only stdin invocations.
-- Moving to TypeScript 7 and aligning the declared npm release toolchain.
+- Added Docker, systemd, deployment, architecture, and security documentation.
+- Moved optional Codex prompts to ephemeral read-only stdin invocations.
+- Moved to TypeScript 7 and aligned the declared npm release toolchain.
 
 ### Fixed
 
@@ -34,7 +42,3 @@ The project follows semantic versioning.
 - Added continuous lease heartbeats, locked concurrent usage accounting,
   strict CSV validation, strict container health checks, and inert TUI data
   rendering.
-
-## [0.3.0] - 2026-07-26
-
-- Initial public release candidate.

@@ -4,12 +4,18 @@
 [![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+[Product site](https://barsbookkeeper.com/) ·
+[Architecture](docs/architecture.md) ·
+[Deployment guide](docs/deployment.md)
+
 Local-first inventory intelligence and purchasing workflows for bars. Bars
 Bookkeeper turns invoices, Toast sales, and sparse hand counts into an
 auditable SQLite inventory ledger, then produces forecasts, reviewable
 decisions, and order recommendations through a terminal UI.
 
-Version 3 is an early public release candidate. Use backups, review generated
+This repository contains the Version 3 inventory engine, CLI, terminal
+dashboard, and operational tooling. The product site shows the manager-facing
+workflow. Version 3 remains a release candidate: use backups, review generated
 actions, and test live integrations against a non-production data directory
 before relying on them operationally.
 
