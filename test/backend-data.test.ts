@@ -253,6 +253,23 @@ Southern Glazer,INV-1,2026-05-11T13:00:00.000Z,House Vodka 1L,1000,ml,0.02`,
     expect(getInventoryPosition(db, skuId, { asOf })?.onHand).toBe(0)
   })
 
+  it.each([true, false, [], [5], {}, '   ', '\t'])('rejects coerced count quantity %j before recording evidence', (quantity) => {
+    const result = ingestCounts(db, JSON.stringify([
+      { sku: 'Validated Vodka 1L', countedQuantity: quantity, occurredAt: asOf, unit: 'ml' },
+    ]))
+
+    expect(result).toMatchObject({ recordsSeen: 1, recordsImported: 0, errors: 1 })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM inventory_events').get()?.count).toBe(0)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM source_documents').get()?.count).toBe(0)
+  })
+
+  it.each([0, '0', ' 5.5 '])('accepts numeric count quantity %j', (quantity) => {
+    const result = ingestCounts(db, [{ sku: 'Validated Vodka 1L', countedQuantity: quantity, occurredAt: asOf, unit: 'ml' }])
+
+    expect(result).toMatchObject({ recordsImported: 1, errors: 0 })
+    expect(getInventoryPositions(db, { asOf })[0]?.onHand).toBe(Number(quantity))
+  })
+
   it('parses rough manager notes into sparse count evidence', () => {
     seedDemoData(db, asOf)
 

@@ -89,7 +89,10 @@ export const toNumber = (value: unknown, fallback = 0) => {
 }
 
 export const parseJsonOrCsv = <T extends Record<string, unknown>>(input: string | T[]): T[] => {
-  if (Array.isArray(input)) return input
+  if (Array.isArray(input)) {
+    if (!input.every(isRecord)) throw new Error('json_rows_invalid')
+    return input
+  }
   const trimmed = input.trim()
   if (!trimmed) return []
   if (trimmed.startsWith('[')) {

@@ -80,6 +80,8 @@ const fieldNumber = (row: Record<string, unknown>, keys: string[], fallback?: nu
   for (const key of keys) {
     const candidate = row[key]
     if (candidate !== null && candidate !== undefined && candidate !== '') {
+      if (typeof candidate !== 'number' && typeof candidate !== 'string') return null
+      if (typeof candidate === 'string' && candidate.trim() === '') return null
       const parsed = typeof candidate === 'number' ? candidate : Number(candidate)
       return Number.isFinite(parsed) ? parsed : null
     }

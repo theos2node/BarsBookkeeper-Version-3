@@ -12,6 +12,15 @@ The project follows semantic versioning.
   parts of Bars Bookkeeper are contained in this repository.
 - Moved the original release notes under the version they describe.
 
+### Fixed
+
+- Validate direct array imports before starting ingest, matching JSON row
+  validation.
+- Reject booleans, arrays, objects, and whitespace-only numeric fields instead
+  of coercing them into inventory quantities or costs.
+- Update Vitest and affected development dependencies to resolve dependency
+  audit findings.
+
 ## [0.3.0] - 2026-07-26
 
 ### Changed
