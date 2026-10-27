@@ -20,4 +20,15 @@ describe('structured ingest parsing', () => {
     expect(() => parseJsonOrCsv('[{"sku":"Vodka"},42]')).toThrow('json_rows_invalid')
     expect(() => parseJsonOrCsv('["bad"]')).toThrow('json_rows_invalid')
   })
+
+  it('validates direct array imports just like JSON imports', () => {
+    for (const row of [null, 42, 'bad', []]) {
+      expect(() => parseJsonOrCsv([row] as unknown as Record<string, unknown>[])).toThrow(
+        'json_rows_invalid',
+      )
+    }
+    const rows = [{ sku: 'Vodka', quantity: 2 }]
+    expect(parseJsonOrCsv(rows)).toBe(rows)
+    expect(parseJsonOrCsv([])).toEqual([])
+  })
 })
